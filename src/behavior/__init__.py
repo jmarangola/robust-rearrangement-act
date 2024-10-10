@@ -42,4 +42,14 @@ def get_actor(cfg: DictConfig, device) -> Actor:
             cfg=cfg,
             device=device,
         )
+
+    # Action chunking transformer actor
+    elif actor_name.lower() == "act":
+        from src.behavior.action_chunking_transformer import ActionChunkingTransformerPolicy
+
+        return ActionChunkingTransformerPolicy(
+            cfg=cfg,
+            device=device
+        )
+
     raise ValueError(f"Unknown actor type: {cfg.actor}")
