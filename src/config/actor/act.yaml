@@ -1,7 +1,13 @@
+# Extend the base_actor config
+defaults:
+  - base_actor
 
 name: act
 
-predict_past_actions: False
+action_horizon: 1
+pred_horizon: 32
+obs_horizon: 1
+predict_past_actions: ${predict_past_actions}
 
 loss_fn: L1Loss
 
@@ -20,15 +26,6 @@ model:
       activation: relu
       normalize_before: False
 
-
-
-
-
-
-# TODO: reconcile with defaults
-action_horizon: 1
-pred_horizon: 32
-obs_horizon: 1
 
 
 

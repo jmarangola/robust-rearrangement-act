@@ -227,9 +227,7 @@ class ActionChunkingTransformerPolicy(Actor):
             cfg (DictConfig):
         """
         super().__init__(device, cfg)
-
-        self.model = None
-        self.loss_fn = None
+        # TODO: impl
 
     def _normalized_action(self, nobs: torch.Tensor) -> torch.Tensor:
         """Perform inference
@@ -241,13 +239,14 @@ class ActionChunkingTransformerPolicy(Actor):
             torch.Tensor: A tensor of action_horizon normalized actions.
         """
         pass
+        # TODO: impl
 
     def compute_loss(self, batch) -> Tuple[torch.Tensor, dict]:
         """Training"""
-        loss_dict = {}
-        loss = 0
+        # TODO: impl
+        pass
 
-        return loss, loss_dict
+        # return loss, loss_dict
 
 
 mu_var = torch.rand(3, 2)

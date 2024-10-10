@@ -5,7 +5,7 @@ import hydra
 
 from omegaconf import DictConfig
 from torch import nn, Tensor
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Any
 from copy import deepcopy
 
 
@@ -45,7 +45,7 @@ class ModuleConfigurator():
             else:
                 raise ValueError(f"Argument {arg} not found in configuration.")
 
-    def find_recursive(self, cfg: DictConfig, module_name: str) -> DictConfig:
+    def find_recursive(self, cfg: DictConfig, module_name: str) -> Optional[Any]:
         """
         Recursively searches through a DictConfig for a specific module config.
 
