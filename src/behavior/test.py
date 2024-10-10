@@ -46,6 +46,16 @@ class ModuleConfigurator():
                 raise ValueError(f"Argument {arg} not found in configuration.")
 
     def find_recursive(self, cfg: DictConfig, module_name: str) -> DictConfig:
+        """
+        Recursively searches through a DictConfig for a specific module config.
+
+        Args:
+            cfg (DictConfig): The configuration to search.
+            module_name (str): The module name that is being searched for.
+
+        Returns:
+            DictConfig: The config associated with the key if found, otherwise None.
+        """
         if module_name in cfg:
             return cfg[module_name]
         for key in set(cfg.keys()):
@@ -159,11 +169,10 @@ class TransformerEncoder(nn.Module, ModuleConfigurator):
 
 
 
-
 @hydra.main(config_path="../config/actor", config_name="act")
 def load_cfg(cfg: DictConfig):
     # print(cfg.model)
-    tk = TransformerEncoder(cfg)
+    tk = TransformerEncoder(cfg.model)
     print(tk)
 # print(tk)
 load_cfg()
