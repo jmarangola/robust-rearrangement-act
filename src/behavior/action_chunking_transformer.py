@@ -62,19 +62,22 @@ def _get_module_clones(module: nn.Module, n: int) -> nn.Module:
 
 def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor]:
     """
-    Returns the activation function ('relu', 'gelu', or 'glu') or raises a RuntimeError for invalid input.
+    Returns the specified activation function from torch.nn.functional or raises a RuntimeError for invalid input.
+    Supports all activation functions implemented by torch.nn.functional.
+
+    Args:
+        activation (str): The name of the activation function to retrieve (e.g., 'relu', 'gelu', 'glu').
+
+    Returns:
+        Callable[[torch.Tensor], torch.Tensor]: The corresponding activation function.
 
     Raises:
-        RuntimeError: If the provided activation string is not 'relu', 'gelu', or 'glu'.
+        RuntimeError: If the provided activation string is not implemented in torch.nn.functional.
     """
-    if activation == "relu":
-        return F.relu
-    elif activation == "gelu":
-        return F.gelu
-    elif activation == "glu":
-        return F.glu
+    if hasattr(F, activation):
+        return getattr(F, activation)
     else:
-        raise RuntimeError(f"Activation should be 'relu', 'gelu', or 'glu', not {activation}.")
+        raise RuntimeError(f"Activation '{activation}' not implemented by torch.nn.functional.")
 
 
 class ModuleConfigurator():
