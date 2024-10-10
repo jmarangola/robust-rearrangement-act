@@ -1,0 +1,36 @@
+
+name: act
+
+predict_past_actions: False
+
+loss_fn: L1Loss
+
+# kl_weight: 1.0
+# temporal_ensembling_m: 0.1
+
+model:
+  TransformerEncoder:
+    num_layers: 4
+    layer_norm: True
+    TransformerEncoderLayer:
+      dim_model: 256
+      num_heads: 8
+      dim_feedforward: 2048
+      dropout: 0.1
+      activation: relu
+      normalize_before: False
+
+
+
+
+
+
+# TODO: reconcile with defaults
+action_horizon: 1
+pred_horizon: 32
+obs_horizon: 1
+
+
+
+
+
