@@ -64,15 +64,6 @@ def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor
     """
     Returns the specified activation function from torch.nn.functional or raises a RuntimeError for invalid input.
     Supports all activation functions implemented by torch.nn.functional.
-
-    Args:
-        activation (str): The name of the activation function to retrieve (e.g., 'relu', 'gelu', 'glu').
-
-    Returns:
-        Callable[[torch.Tensor], torch.Tensor]: The corresponding activation function.
-
-    Raises:
-        RuntimeError: If the provided activation string is not implemented in torch.nn.functional.
     """
     if hasattr(F, activation):
         return getattr(F, activation)
