@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import hydra
+import numpy as np
 
 from queue import Queue
 from src.behavior.base import Actor
@@ -333,12 +334,13 @@ class ActionTransformer(ModuleConfigurator):
 
 class ConditionalVAE(ModuleConfigurator):
     def __init__(self, cfg: DictConfig) -> None:
-        """Action chunking with transformers policy.
+        """Conditional variational autoencoder for training an action chunking policy.
 
         Args:
             cfg (DictConfig):
         """
-        super().__init__(self, cfg, ('dim_state', 'dim_latent', 'dim_action'), recursive=False)
+        super().__init__(self, cfg, ('dim_state', 'dim_latent',
+                                     'dim_action', "action_chunk_size"), recursive=False)
 
         self.action_transformer = self.build(cfg, type(self), ActionTransformer)
         self.encoder = self.build(cfg, type(self), TransformerEncoder)
@@ -346,73 +348,99 @@ class ConditionalVAE(ModuleConfigurator):
         self.dim_hidden = self.action_transformer.dim_model
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
+        # Learnable embeddings for action chunking, where each embedding corresponds to a chunk of actions and serves as input queries to the transformer decoder for predicting action sequences.
+        self.query_embedding = nn.Embedding(self.action_chunk_size, self.dim_hidden)
 
-        # Embeddings
+        # Additional CVAE encoder parameters
         self.cls_embedding = nn.Embedding(1, self.dim_hidden)
-
-        # Projections
         self.encoder_action_proj = nn.Linear(self.dim_action, self.dim_hidden)
         self.encoder_state_proj = nn.Linear(self.dim_state, self.dim_hidden)
-
-        # Project to latent space represented by a mean and a variance ( * 2 )
-        self.latent_proj = nn.Linear(self.dim_hidden, self.dim_latent * 2)
-
+        self.latent_proj_hidden = nn.Linear(self.dim_hidden, self.dim_latent * 2)  # Project to latent space represented by a mean and a variance ( * 2 )
         self.input_proj_robot_state = nn.Linear(self.dim_state, self.dim_hidden)
 
-        # CVAE decoder parameters
+        # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
+        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(1 + 1 + self.action_chunk_size, self.dim_hidden))  # [CLS], qpos, a_seq
+
+        # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
-        # Additional embeddings for proprio and latent
-        self.positional_embeddings = nn.Embedding(2, self.dim_hidden)
+        self.positional_embeddings = nn.Embedding(2, self.dim_hidden)  # additional embeddings for proprio, latent
 
     def forward(self,
-                normalized_obs: torch.Tensor,
+                obs_state: torch.Tensor,
                 actions: Optional[torch.Tensor] = None,
                 is_pad: Optional[torch.Tensor] = None
                 ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-        if actions is not None:
-            B, _, _ = actions
-            # Training
-            # Actions: (B, OH, A)
+        # Training
+        # Actions: (B, OH, A)
+        is_training = actions is not None
+        if is_training:
+            B, _ = actions
 
-            # Take first OH actions
-            actions = actions[:, :self.obs_horizon]
-            assert is_pad is not None, 'is pad cannot be None'
-            is_pad = is_pad[:, :self.obs_horizon]
+            action_embedding = self.encoder_action_proj(actions)  # (B, seq, hidden)
+            obs_embedding = self.encoder_state_proj(obs_state)  # (B, hidden)
+            obs_embedding = torch.unsqueeze(obs_embedding, axis=1)  # (B, 1, hidden)
 
-            action_embedding = self.encoder_action_proj(actions)
-            obs_embedding = self.encoder_state_proj(normalized_obs)
-            cls_embedding = self.cls_embedding.weight
-            cls_embedding = torch.unsqueeze(cls_embedding, axis=0).repeat(B, 1, 1)
-            encoder_input = torch.cat([cls_embedding, obs_embedding, action_embedding], axis=1)
+            cls_embedding = self.cls_embedding.weight  # (1, hidden)
+            cls_embedding = torch.unsqueeze(cls_embedding, axis=0).repeat(B, 1, 1)  #  (B, 1, hidden)
 
-            # Permute to (1, 0, 2)
-            encoder_input = encoder_input.permute(1, 0, 2)
+            # Construct the input to the encoder
+            encoder_input = torch.cat([cls_embedding, obs_embedding, action_embedding], axis=1)  #  (bs, seq+1, hidden_dim)
+            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim)
 
+            # Do not mask [CLS]
+            cls_joint_is_pad = torch.full((B, 2), False).to(obs_state.device)  # False: not a padding
+            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)   #  (B, seq + 1)
+
+            # Get positional encoding
             # TODO: cleanup
             # this is really ugly
-            cls_joint_is_pad = torch.full(B(B, 2), False).to(actions.device)
-            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)
+            pos_enc = self.pos_table.clone().detach()
+            pos_enc = pos_enc.permute(1, 0, 2)  # (seq+1, 1, hidden)
 
-            pos_embedding = self.pos_table.clone().detach()
-            pos_embedding = pos_embedding.permute(1, 0, 2)
+            # Pass through the encoder
+            encoder_output = self.encoder(encoder_input, pos=pos_enc,
+                                          src_key_padding_mask=is_pad)
+            encoder_output = encoder_output[0]  # Take [CLS] output only
 
-            enc_output = self.encoder(encoder_input) # TODO: fix
-            cls_output = enc_output[0]
+            latent_embed = self.latent_proj_hidden(encoder_output)
+            mu, logvar = torch.split(latent_embed, self.dim_latent, dim=1)
 
-            latent_projection = self.latent_proj(enc_output)
-            mu, logvar = torch.split(latent_projection, self.dim_latent, dim=1)
-
-            # Sample from the latent space
+            # Use reparamatrization trick to efficiently sample from the posterior
+            # for the decoder
             latent_sample = self.reparametrize(mu, logvar)
-
-            # Re-project the sampled latent variable back to the desired embedding space
             latent_input = self.latent_out_proj(latent_sample)
-
-
         else:
             # Inference
-            pass
+            latent_sample = torch.zeros([B, self.latent_dim], dtype=torch.float32).to(obs_state.device)
+            latent_input = self.latent_out_proj(latent_sample)
+
+        # Forward pass (latent_embedding, decoder_state_embedding) though the CVAE decoder
+        state_embedding_decoder_input = self.input_proj_robot_state(obs_state)
+        # TODO: cleanup
+        # Is self.additional_position_embed.weight wrong shape?
+        hs = self.action_transformer(None,
+                                     self.query_embedding.weight,
+                                     None,
+                                     latent_input=latent_input,
+                                     proprio_input=state_embedding_decoder_input,
+                                     additional_pos_embedding=self.positional_embeddings.weight)[0]
+
+        a_hat = self.action_head(hs)
+        is_pad_hat = self.is_pad_head(hs)
+
+        return a_hat, is_pad_hat, mu, logvar
+
+    def get_sinusoid_encoding_table(self, n_position: int, d_hid: int):
+        def get_position_angle_vec(position: np.ndarray):
+            return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
+
+        # TODO: cleanup -- this is ugly
+        sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(n_position)])
+        sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+        sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+        return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
     def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Sample from p(z) using the reparameterization trick.
@@ -461,5 +489,6 @@ def load_cfg(cfg: DictConfig):
     # print(cfg.model)
     tk = ConditionalVAE(cfg)
     print(tk)
-# print(tk)
+
+
 load_cfg()
