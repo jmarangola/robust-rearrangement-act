@@ -6,7 +6,7 @@ import hydra
 from src.behavior.base import Actor
 from typing import Tuple, Union
 from omegaconf import DictConfig
-from typing import Optional, Any, Callable, Type, List
+from typing import Optional, Any, Callable, List, Iterable, Set
 from torch import Tensor
 from copy import deepcopy
 
@@ -29,41 +29,40 @@ def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor
 
 class ModuleConfigurator():
     """
-    A utility class to dynamically initalize a nn module from a config.
+    A utility class to dynamically initialize the network parameters from a config.
     """
-    def __init__(self, cltype: Type, cfg: DictConfig, args: List[str]):
-        clname = cltype.__name__
-        if (module_cfg := self.find_recursive(cfg, clname)) is None:
-            raise ValueError(f"ModuleConfigurator failed to find {clname} in input cfg '{cfg}'.")
-        for arg in args:
-            if arg in module_cfg:
-                setattr(self, arg, module_cfg[arg])
-            else:
-                raise ValueError(f"Argument {arg} not found in configuration.")
+    def __init__(self, module: nn.Module, cfg: DictConfig, args: Iterable[str]):
+        self.set_recursive(module, cfg, set(args))
+        assert all([hasattr(module, attr) for attr in args]), \
+            f"Failed to construct '{module.__class__.__name__}'."
 
-    def find_recursive(self, cfg: DictConfig, module_name: str) -> Any:
+    def set_recursive(self, module: nn.Module, cfg: DictConfig, args: Set[str]):
         """
-        Recursively searches through a DictConfig for a specific module config.
+        Recursively sets all parent non-dict keys as member variables in the module,
+        and allows child configurations to override parent values.
 
         Args:
-            cfg (DictConfig): The configuration to search.
-            module_name (str): The module name that is being searched for.
-
-        Returns:
-            DictConfig: The config associated with the key if found, otherwise None.
+            module (nn.Module): The module to set the attributes for.
+            cfg (DictConfig): The configuration to pull values from, if the root of the config is
+                              not the module name, the module will be recursively found.
+            args (Set[str]): A set of allowed arguments to enforce as attributes in the module.
         """
+        module_name = module.__class__.__name__
+
+        for key, val in cfg.items():
+            if isinstance(val, (DictConfig, dict)) and module_name not in cfg:
+                self.set_recursive(module, val, args)
+            elif key in args and not isinstance(val, (DictConfig, dict)):
+                setattr(module, key, val)
+
         if module_name in cfg:
-            return cfg[module_name]
-        for key in set(cfg.keys()):
-            value = cfg[key]
-            if isinstance(value, (DictConfig, dict)):
-                result = self.find_recursive(value, module_name)
-                if result is not None:
-                    return result
-        return None
+            module_cfg = cfg[module_name]
+            for key, val in module_cfg.items():
+                if key in args and not isinstance(val, (DictConfig, dict)):
+                    setattr(module, key, val)
 
 
-class TransformerEncoderLayer(nn.Module, ModuleConfigurator):
+class TransformerEncoderLayer(nn.Module):
     def __init__(self,
                  cfg: DictConfig):
         args = [
@@ -75,7 +74,7 @@ class TransformerEncoderLayer(nn.Module, ModuleConfigurator):
             "normalize_before"
         ]
         super().__init__()
-        ModuleConfigurator.__init__(self, self.__class__, cfg, args)
+        ModuleConfigurator(self, cfg, args)
 
         self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads,
                                                dropout=self.dropout)
@@ -137,12 +136,12 @@ class TransformerEncoderLayer(nn.Module, ModuleConfigurator):
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
 
-class TransformerEncoder(nn.Module, ModuleConfigurator):
+class TransformerEncoder(nn.Module):
     def __init__(self, cfg: DictConfig):
         # TODO: Allow encoder to dynamically take different types of transformers !
         args = ["num_layers", "layer_norm"]
         super().__init__()
-        ModuleConfigurator.__init__(self, self.__class__, cfg, args)
+        ModuleConfigurator(self, cfg, args)
 
         encoder_layer = TransformerEncoderLayer(cfg)
         self.layers = _get_module_clones(encoder_layer, self.num_layers)
@@ -165,21 +164,152 @@ class TransformerEncoder(nn.Module, ModuleConfigurator):
         return output
 
 
-class TransformerDecoder(nn.Module, ModuleConfigurator):
+class TransformerDecoderLayer(nn.Module):
     def __init__(self, cfg: DictConfig):
         super().__init__()
-        ModuleConfigurator.__init__(self, self.__class__, cfg)
-        # TODO: impl
+        args = [
+            'dim_model',
+            'num_heads',
+            'dim_feedforward',
+            'dropout',
+            'normalize_before',
+            'activation'
+        ]
+        ModuleConfigurator(self, cfg, args)
+        self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
+        self.multihead_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
+
+        self.linear1 = nn.Linear(self.dim_model, self.dim_feedforward)
+        self.dropout0 = nn.Dropout(self.dropout)
+        self.linear2 = nn.Linear(self.dim_feedforward, self.dim_model)
+
+        self.layernorm1 = nn.LayerNorm(self.dim_model)
+        self.layernorm2 = nn.LayerNorm(self.dim_model)
+        self.layernorm3 = nn.LayerNorm(self.dim_model)
+
+        self.dropout1 = nn.Dropout(self.dropout)
+        self.dropout2 = nn.Dropout(self.dropout)
+        self.dropout3 = nn.Dropout(self.dropout)
+
+        self.activation = _get_activation_fn(self.activation)
+        self.normalize_before = self.normalize_before
+
+    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
+        return tensor if pos is None else tensor + pos
+
+    def forward_post(self, tgt, memory,
+                     tgt_mask: Optional[Tensor] = None,
+                     memory_mask: Optional[Tensor] = None,
+                     tgt_key_padding_mask: Optional[Tensor] = None,
+                     memory_key_padding_mask: Optional[Tensor] = None,
+                     pos: Optional[Tensor] = None,
+                     query_pos: Optional[Tensor] = None):
+        q = k = self.with_pos_embed(tgt, query_pos)
+        tgt2 = self.self_attn(q, k, value=tgt, attn_mask=tgt_mask,
+                              key_padding_mask=tgt_key_padding_mask)[0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.layernorm1(tgt)
+        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
+                                   key=self.with_pos_embed(memory, pos),
+                                   value=memory, attn_mask=memory_mask,
+                                   key_padding_mask=memory_key_padding_mask)[0]
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.layernorm2(tgt)
+        tgt2 = self.linear2(self.dropout0(self.activation(self.linear1(tgt))))
+        tgt = tgt + self.dropout3(tgt2)
+        tgt = self.layernorm3(tgt)
+
+        return tgt
+
+    def forward_pre(self, tgt, memory,
+                    tgt_mask: Optional[Tensor] = None,
+                    memory_mask: Optional[Tensor] = None,
+                    tgt_key_padding_mask: Optional[Tensor] = None,
+                    memory_key_padding_mask: Optional[Tensor] = None,
+                    pos: Optional[Tensor] = None,
+                    query_pos: Optional[Tensor] = None):
+        tgt2 = self.layernorm1(tgt)
+        q = k = self.with_pos_embed(tgt2, query_pos)
+        tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
+                              key_padding_mask=tgt_key_padding_mask)[0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt2 = self.layernorm2(tgt)
+        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
+                                   key=self.with_pos_embed(memory, pos),
+                                   value=memory, attn_mask=memory_mask,
+                                   key_padding_mask=memory_key_padding_mask)[0]
+        tgt = tgt + self.dropout2(tgt2)
+        tgt2 = self.layernorm3(tgt)
+        tgt2 = self.linear2(self.dropout0(self.activation(self.linear1(tgt2))))
+        tgt = tgt + self.dropout3(tgt2)
+
+        return tgt
+
+    def forward(self, tgt, memory,
+                tgt_mask: Optional[Tensor] = None,
+                memory_mask: Optional[Tensor] = None,
+                tgt_key_padding_mask: Optional[Tensor] = None,
+                memory_key_padding_mask: Optional[Tensor] = None,
+                pos: Optional[Tensor] = None,
+                query_pos: Optional[Tensor] = None):
+        if self.normalize_before:
+            return self.forward_pre(tgt, memory, tgt_mask, memory_mask,
+                                    tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
+        return self.forward_post(tgt, memory, tgt_mask, memory_mask,
+                                 tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
 
 
-class ActionTransformer(nn.Module, ModuleConfigurator):
+class TransformerDecoder(nn.Module):
     def __init__(self, cfg: DictConfig):
         super().__init__()
-        ModuleConfigurator.__init__(self, self.__class__, cfg)
+        args = ['num_layers']
+        ModuleConfigurator(self, cfg, args)
+
+        transformer_decoder_layer = TransformerDecoderLayer(cfg)
+        self.layers = _get_module_clones(transformer_decoder_layer, self.num_layers)
+        self.layer_norm = nn.LayerNorm(transformer_decoder_layer.dim_model)
+        self.return_intermediate = False  # TODO parametrize
+
+    def forward(self, tgt, memory,
+                tgt_mask: Optional[Tensor] = None,
+                memory_mask: Optional[Tensor] = None,
+                tgt_key_padding_mask: Optional[Tensor] = None,
+                memory_key_padding_mask: Optional[Tensor] = None,
+                pos: Optional[Tensor] = None,
+                query_pos: Optional[Tensor] = None):
+
+        output = tgt
+
+        intermediate = []
+
+        for layer in self.layers:
+            output = layer(output, memory, tgt_mask=tgt_mask,
+                           memory_mask=memory_mask,
+                           tgt_key_padding_mask=tgt_key_padding_mask,
+                           memory_key_padding_mask=memory_key_padding_mask,
+                           pos=pos, query_pos=query_pos)
+            if self.return_intermediate:
+                intermediate.append(self.layer_norm(output))
+
+        output = self.layer_norm(output)
+
+        if self.return_intermediate:
+            intermediate.pop()
+            intermediate.append(output)
+            return torch.stack(intermediate)
+
+        return output.unsqueeze(0)
+
+
+class ActionTransformer(nn.Module):
+    def __init__(self, cfg: DictConfig):
+        super().__init__()
+        args = []
+        ModuleConfigurator(self, cfg, args)
 
         assert 'TransformerEncoder' in cfg and 'TransformerDecoder' in cfg
         self.encoder = TransformerEncoder(cfg['TransformerEncoder'])
-        self.decoder = TransformerDecoder(cfg['TransformerDecoder'])
+        self.decoder = TransformerDecoder(cfg['TransformerDecoder']) # TODO: remove explicit indexing
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -192,7 +322,7 @@ class ActionTransformer(nn.Module, ModuleConfigurator):
         pass
 
 
-class ConditionalVAE(nn.Module, ModuleConfigurator):
+class ConditionalVAE(nn.Module):
     def __init__(self,
                  device: Union[str, torch.device],
                  cfg: DictConfig,
@@ -208,7 +338,7 @@ class ConditionalVAE(nn.Module, ModuleConfigurator):
             "dim_state",
             "dim_latent"
         ]
-        ModuleConfigurator.__init__(self, self.__class__, cfg, args)
+        ModuleConfigurator(self, cfg, args)
         # TODO: fix hardcode:
         self.dim_hidden = 256
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
@@ -231,12 +361,22 @@ class ConditionalVAE(nn.Module, ModuleConfigurator):
         # Additional embeddings for proprio and latent
         self.positional_embeddings = nn.Embedding(2, self.dim_hidden)
 
+    def forward(self,
+                normalized_obs: torch.Tensor,
+                actions: Optional[torch.Tensor] = None,
+                is_pad: Optional[torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-    def forward(self, normalized_obs, actions=None, is_pad=None):
         if actions is not None:
             B, _, _ = actions
             # Training
-            # Actions: (B, H, A)
+            # Actions: (B, OH, A)
+
+            # Take first OH actions
+            actions = actions[:, :self.obs_horizon]
+            assert is_pad is not None, "Is pad cannot be None"
+            is_pad = is_pad[:, :self.obs_horizon]
+
             action_embedding = self.encoder_action_proj(actions)
             obs_embedding = self.encoder_state_proj(normalized_obs)
             cls_embedding = self.cls_embedding.weight
@@ -270,7 +410,7 @@ class ConditionalVAE(nn.Module, ModuleConfigurator):
             # Inference
             pass
 
-    def reparametrize(self, mu, logvar):
+    def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Sample from p(z) using the reparameterization trick.
 
         Args:
