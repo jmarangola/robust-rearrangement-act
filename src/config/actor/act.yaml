@@ -5,14 +5,14 @@ defaults:
 name: act
 
 action_horizon: 1
-pred_horizon: 32
+pred_horizon: 8
 obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
 optimization:
   loss_fn: L1Loss
   optimizer: adam
-  beta_kl: 1.0
+  beta_kl: 10
 
 inference:
   temporal_ensemble_m: 0.01
@@ -23,6 +23,7 @@ ConditionalVAE:
   dim_state: 58
   dim_latent: 16
   dim_action: 10
+  action_chunk_size: ${pred_horizon}
 
   TransformerEncoder:
     num_layers: 4
