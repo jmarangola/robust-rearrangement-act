@@ -9,15 +9,25 @@ pred_horizon: 32
 obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
-loss_fn: L1Loss
+optimization:
+  loss_fn: L1Loss
+  optimizer: adam
+  beta_kl: 1.0
 
-# kl_weight: 1.0
-# temporal_ensembling_m: 0.1
+inference:
+  temporal_ensemble_m: 0.01
 
-model:
+
+
+ConditionalVAE:
+  dim_state: 10
+  dim_latent: 16
+  dim_action: 58
+
   TransformerEncoder:
     num_layers: 4
     layer_norm: True
+
     TransformerEncoderLayer:
       dim_model: 256
       num_heads: 8
@@ -25,6 +35,29 @@ model:
       dropout: 0.1
       activation: relu
       normalize_before: False
+
+  ActionTransformer:
+    num_heads: 8
+    num_encoder_layers: 6
+    num_decoder_layers: 6
+
+    TransformerEncoder:
+      dim_model: 512
+      dim_feedforward: 2048
+      dropout: 0.1
+      activation: relu
+      normalize_before: False
+
+    TransformerDecoder:
+      dim_model: 512
+      num_decoder_layers: 6
+      dim_feedforward: 2048
+      dropout: 0.1
+      activation: relu
+      normalize_before: False
+
+
+
 
 
 
