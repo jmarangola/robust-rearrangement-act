@@ -1,16 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import hydra
 
 from src.behavior.base import Actor
-from typing import Dict, Tuple, Union
-from omegaconf import DictConfig, OmegaConf
-from torch.autograd import Variable
-from typing import Optional, Any, Callable, Type
+from typing import Tuple, Union
+from omegaconf import DictConfig
+from typing import Optional, Any, Callable, Type, List
 from torch import Tensor
 from copy import deepcopy
-
-
 
 
 def _get_module_clones(module: nn.Module, n: int) -> nn.Module:
@@ -31,7 +29,7 @@ def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor
 
 class ModuleConfigurator():
     """
-    A utility class to initialize attributes from a config.
+    A utility class to dynamically initalize a nn module from a config.
     """
     def __init__(self, cltype: Type, cfg: DictConfig, args: List[str]):
         clname = cltype.__name__
@@ -43,7 +41,7 @@ class ModuleConfigurator():
             else:
                 raise ValueError(f"Argument {arg} not found in configuration.")
 
-    def find_recursive(self, cfg: DictConfig, module_name: str) -> DictConfig:
+    def find_recursive(self, cfg: DictConfig, module_name: str) -> Any:
         """
         Recursively searches through a DictConfig for a specific module config.
 
@@ -79,7 +77,8 @@ class TransformerEncoderLayer(nn.Module, ModuleConfigurator):
         super().__init__()
         ModuleConfigurator.__init__(self, self.__class__, cfg, args)
 
-        self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
+        self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads,
+                                               dropout=self.dropout)
 
         self.linear1 = nn.Linear(self.dim_model, self.dim_feedforward)
         self.dropout0 = nn.Dropout(self.dropout)
@@ -140,7 +139,7 @@ class TransformerEncoderLayer(nn.Module, ModuleConfigurator):
 
 class TransformerEncoder(nn.Module, ModuleConfigurator):
     def __init__(self, cfg: DictConfig):
-        # TODO: Allow encoder to dynamically take different types of transformer blocks !
+        # TODO: Allow encoder to dynamically take different types of transformers !
         args = ["num_layers", "layer_norm"]
         super().__init__()
         ModuleConfigurator.__init__(self, self.__class__, cfg, args)
@@ -165,9 +164,35 @@ class TransformerEncoder(nn.Module, ModuleConfigurator):
 
         return output
 
-# TODO: Move network to a base implementation separate from this class derived from the Actor.
-# This is an ugly MVP to get things working intially.
-class ActionChunkingTransformerPolicy(Actor):
+
+class TransformerDecoder(nn.Module, ModuleConfigurator):
+    def __init__(self, cfg: DictConfig):
+        super().__init__()
+        ModuleConfigurator.__init__(self, self.__class__, cfg)
+        # TODO: impl
+
+
+class ActionTransformer(nn.Module, ModuleConfigurator):
+    def __init__(self, cfg: DictConfig):
+        super().__init__()
+        ModuleConfigurator.__init__(self, self.__class__, cfg)
+
+        assert 'TransformerEncoder' in cfg and 'TransformerDecoder' in cfg
+        self.encoder = TransformerEncoder(cfg['TransformerEncoder'])
+        self.decoder = TransformerDecoder(cfg['TransformerDecoder'])
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self):
+        # TODO: strip out rgb stuff, re-implement something better
+        pass
+
+
+class ConditionalVAE(nn.Module, ModuleConfigurator):
     def __init__(self,
                  device: Union[str, torch.device],
                  cfg: DictConfig,
@@ -178,42 +203,86 @@ class ActionChunkingTransformerPolicy(Actor):
             device (Union[str, torch.device]): Target device for model.
             cfg (DictConfig):
         """
-        super().__init__(device, cfg)
-        # TODO: impl
+        super().__init__()
+        args = [
+            "dim_state",
+            "dim_latent"
+        ]
+        ModuleConfigurator.__init__(self, self.__class__, cfg, args)
+        # TODO: fix hardcode:
+        self.dim_hidden = 256
+        self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
+        self.is_pad_head = nn.Linear(self.dim_hidden, 1)
 
-    def _normalized_action(self, nobs: torch.Tensor) -> torch.Tensor:
-        """Perform inference
+        # Embeddings
+        self.cls_embedding = nn.Embedding(1, self.dim_hidden)
+
+        # Projections
+        self.encoder_action_proj = nn.Linear(self.dim_action, self.dim_hidden)
+        self.encoder_state_proj = nn.Linear(self.dim_state, self.dim_hidden)
+
+        # Project to latent space represented by a mean and a variance ( * 2 )
+        self.latent_proj = nn.Linear(self.dim_hidden, self.dim_latent * 2)
+
+        self.input_proj_robot_state = nn.Linear(self.dim_state, self.dim_hidden)
+
+        # CVAE decoder parameters
+        self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
+        # Additional embeddings for proprio and latent
+        self.positional_embeddings = nn.Embedding(2, self.dim_hidden)
+
+
+    def forward(self, normalized_obs, actions=None, is_pad=None):
+        if actions is not None:
+            B, _, _ = actions
+            # Training
+            # Actions: (B, H, A)
+            action_embedding = self.encoder_action_proj(actions)
+            obs_embedding = self.encoder_state_proj(normalized_obs)
+            cls_embedding = self.cls_embedding.weight
+            cls_embedding = torch.unsqueeze(cls_embedding, axis=0).repeat(B, 1, 1)
+            encoder_input = torch.cat([cls_embedding, obs_embedding, action_embedding], axis=1)
+
+            # Permute to (1, 0, 2)
+            encoder_input = encoder_input.permute(1, 0, 2)
+
+            # TODO: cleanup
+            # this is really ugly
+            cls_joint_is_pad = torch.full(B(B, 2), False).to(actions.device)
+            is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)
+
+            pos_embedding = self.pos_table.clone().detach()
+            pos_embedding = pos_embedding.permute(1, 0, 2)
+
+            enc_output = self.encoder(encoder_input) # TODO: fix
+            cls_output = enc_output[0]
+
+            mu, logvar = torch.split(enc_output, self.dim_latent, dim=1)
+
+            # Sample from the latent space
+            latent_sample = self.reparametrize(mu, logvar)
+
+            # Re-project the sampled latent variable back to the desired embedding space
+            latent_input = self.latent_out_proj(latent_sample)
+
+
+        else:
+            # Inference
+            pass
+
+    def reparametrize(self, mu, logvar):
+        """Sample from p(z) using the reparameterization trick.
 
         Args:
-            nobs (torch.Tensor): Tensor of normalized observations.
+            mu (Tensor): Mean of the distribution.
+            logvar (Tensor): Log-variance of the distribution.
 
         Returns:
-            torch.Tensor: A tensor of action_horizon normalized actions.
+            Tensor: Sampled latent vector.
         """
-        pass
-        # TODO: impl
-
-    def compute_loss(self, batch) -> Tuple[torch.Tensor, dict]:
-        """Training"""
-        # TODO: impl
-        pass
-
-        # return loss, loss_dict
-
-
-def reparametrize(mu, logvar):
-    """Sample from p(z) using the reparameterization trick.
-
-    Args:
-        mu (Tensor): Mean of the distribution.
-        logvar (Tensor): Log-variance of the distribution.
-
-    Returns:
-        Tensor: Sampled latent vector.
-    """
-    std = torch.exp(0.5 * logvar)
-    eps = torch.randn_like(std)
-    return mu + std * eps
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + std * eps
 
 
 def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
@@ -243,7 +312,10 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
     return total_kld, dimension_wise_kld, mean_kld
 
 
-mu_var = torch.rand(3, 2)
-logvar = torch.ones_like(mu_var)
-
-print(kl_divergence(mu_var, logvar))
+@hydra.main(config_path="../config/actor", config_name="act")
+def load_cfg(cfg: DictConfig):
+    # print(cfg.model)
+    tk = TransformerEncoder(cfg.model)
+    print(tk)
+# print(tk)
+load_cfg()
