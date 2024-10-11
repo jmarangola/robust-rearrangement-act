@@ -3,15 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import hydra
 
+from queue import Queue
 from src.behavior.base import Actor
 from typing import Tuple, Union
 from omegaconf import DictConfig
-from typing import Optional, Any, Callable, List, Iterable, Set
+from typing import Optional, Any, Callable, List, Iterable, Set, Type
 from torch import Tensor
 from copy import deepcopy
 
 
-def _get_module_clones(module: nn.Module, n: int) -> nn.Module:
+def _get_module_clones(module: object, n: int) -> nn.Module:
     """Utility function to clone a module n times by deepcopy."""
     return nn.ModuleList([deepcopy(module) for _ in range(n)])
 
@@ -27,18 +28,19 @@ def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor
         raise RuntimeError(f"Activation '{activation}' not implemented by torch.nn.functional.")
 
 
-class ModuleConfigurator():
+class ModuleConfigurator(nn.Module):
     """
     A utility class to dynamically initialize the network parameters from a config.
     """
-    def __init__(self, module: nn.Module, cfg: DictConfig, args: Iterable[str]):
-        self.set_recursive(module, cfg, set(args))
+    def __init__(self, module: object, cfg: DictConfig, args: Iterable[str], recursive: bool = True):
+        super().__init__()
+        self.set_parameters(module, cfg, set(args), recursive)
         assert all([hasattr(module, attr) for attr in args]), \
             f"Failed to construct '{module.__class__.__name__}'."
 
-    def set_recursive(self, module: nn.Module, cfg: DictConfig, args: Set[str]):
+    def set_parameters(self, module: object, cfg: DictConfig, args: Set[str], find_recursively: bool):
         """
-        Recursively sets all parent non-dict keys as member variables in the module,
+        Recursively set all parent non-dict keys as member variables in the module,
         and allows child configurations to override parent values.
 
         Args:
@@ -49,11 +51,12 @@ class ModuleConfigurator():
         """
         module_name = module.__class__.__name__
 
-        for key, val in cfg.items():
-            if isinstance(val, (DictConfig, dict)) and module_name not in cfg:
-                self.set_recursive(module, val, args)
-            elif key in args and not isinstance(val, (DictConfig, dict)):
-                setattr(module, key, val)
+        if find_recursively:
+            for key, val in cfg.items():
+                if isinstance(val, (DictConfig, dict)) and module_name not in cfg:
+                    self.set_parameters(module, val, args, find_recursively)
+                elif key in args and not isinstance(val, (DictConfig, dict)):
+                    setattr(module, key, val)
 
         if module_name in cfg:
             module_cfg = cfg[module_name]
@@ -61,20 +64,22 @@ class ModuleConfigurator():
                 if key in args and not isinstance(val, (DictConfig, dict)):
                     setattr(module, key, val)
 
+    def build(self, cfg: DictConfig, parent_type: Type, module_type: Type) -> nn.Module:
+        return module_type(cfg[parent_type.__name__]) if parent_type is not None else module_type(cfg)
 
-class TransformerEncoderLayer(nn.Module):
+
+class TransformerEncoderLayer(ModuleConfigurator):
     def __init__(self,
                  cfg: DictConfig):
-        args = [
+        args = (
             "dim_model",
             "num_heads",
             "dim_feedforward",
             "dropout",
             "activation",
             "normalize_before"
-        ]
-        super().__init__()
-        ModuleConfigurator(self, cfg, args)
+        )
+        super().__init__(self, cfg, args)
 
         self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads,
                                                dropout=self.dropout)
@@ -136,16 +141,12 @@ class TransformerEncoderLayer(nn.Module):
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
 
-class TransformerEncoder(nn.Module):
+class TransformerEncoder(ModuleConfigurator):
     def __init__(self, cfg: DictConfig):
-        # TODO: Allow encoder to dynamically take different types of transformers !
-        args = ["num_layers", "layer_norm"]
-        super().__init__()
-        ModuleConfigurator(self, cfg, args)
+        super().__init__(self, cfg, ("num_layers", "layer_norm"))
 
-        encoder_layer = TransformerEncoderLayer(cfg)
+        encoder_layer = self.build(cfg, None, TransformerEncoderLayer)
         self.layers = _get_module_clones(encoder_layer, self.num_layers)
-        self.num_layers = self.num_layers
         self.norm = nn.LayerNorm(encoder_layer.dim_model) if self.layer_norm else False
 
     def forward(self, src,
@@ -164,18 +165,18 @@ class TransformerEncoder(nn.Module):
         return output
 
 
-class TransformerDecoderLayer(nn.Module):
+class TransformerDecoderLayer(ModuleConfigurator):
     def __init__(self, cfg: DictConfig):
-        super().__init__()
-        args = [
+        args = (
             'dim_model',
             'num_heads',
             'dim_feedforward',
             'dropout',
             'normalize_before',
             'activation'
-        ]
-        ModuleConfigurator(self, cfg, args)
+        )
+        super().__init__(self, cfg, args)
+
         self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
         self.multihead_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
 
@@ -259,13 +260,11 @@ class TransformerDecoderLayer(nn.Module):
                                  tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
 
 
-class TransformerDecoder(nn.Module):
+class TransformerDecoder(ModuleConfigurator):
     def __init__(self, cfg: DictConfig):
-        super().__init__()
-        args = ['num_layers']
-        ModuleConfigurator(self, cfg, args)
+        super().__init__(self, cfg, ("num_layers",))
 
-        transformer_decoder_layer = TransformerDecoderLayer(cfg)
+        transformer_decoder_layer = self.build(cfg, None, TransformerDecoderLayer)
         self.layers = _get_module_clones(transformer_decoder_layer, self.num_layers)
         self.layer_norm = nn.LayerNorm(transformer_decoder_layer.dim_model)
         self.return_intermediate = False  # TODO parametrize
@@ -301,15 +300,12 @@ class TransformerDecoder(nn.Module):
         return output.unsqueeze(0)
 
 
-class ActionTransformer(nn.Module):
+class ActionTransformer(ModuleConfigurator):
     def __init__(self, cfg: DictConfig):
-        super().__init__()
-        args = []
-        ModuleConfigurator(self, cfg, args)
+        super().__init__(self, cfg, ('dim_model',))
 
-        assert 'TransformerEncoder' in cfg and 'TransformerDecoder' in cfg
-        self.encoder = TransformerEncoder(cfg['TransformerEncoder'])
-        self.decoder = TransformerDecoder(cfg['TransformerDecoder']) # TODO: remove explicit indexing
+        self.encoder = self.build(cfg, type(self), TransformerEncoder)
+        self.decoder = self.build(cfg, type(self), TransformerDecoder)
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -317,30 +313,37 @@ class ActionTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self):
-        # TODO: strip out rgb stuff, re-implement something better
-        pass
+    def forward(self, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, additional_pos_embedding=None):
+        B = proprio_input.shape[0]
+        src = torch.stack([latent_input, proprio_input], axis=0)
+
+        # pos embed shape: torch.Size([2, batch_size, hidden_dim])
+        pos_embed = additional_pos_embedding.unsqueeze(1).repeat(1, B, 1)
+        # query embed shape: torch.Size([num_queries, batch_size, hidden_dim])
+        query_embed = query_embed.unsqueeze(1).repeat(1, B, 1)
+
+        tgt = torch.zeros_like(query_embed)
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                          pos=pos_embed, query_pos=query_embed)
+        hs = hs.transpose(1, 2)
+
+        return hs
 
 
-class ConditionalVAE(nn.Module):
-    def __init__(self,
-                 device: Union[str, torch.device],
-                 cfg: DictConfig,
-                 ) -> None:
+class ConditionalVAE(ModuleConfigurator):
+    def __init__(self, cfg: DictConfig) -> None:
         """Action chunking with transformers policy.
 
         Args:
-            device (Union[str, torch.device]): Target device for model.
             cfg (DictConfig):
         """
-        super().__init__()
-        args = [
-            "dim_state",
-            "dim_latent"
-        ]
-        ModuleConfigurator(self, cfg, args)
-        # TODO: fix hardcode:
-        self.dim_hidden = 256
+        super().__init__(self, cfg, ('dim_state', 'dim_latent', 'dim_action'), recursive=False)
+
+        self.action_transformer = self.build(cfg, type(self), ActionTransformer)
+        self.encoder = self.build(cfg, type(self), TransformerEncoder)
+
+        self.dim_hidden = self.action_transformer.dim_model
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
 
@@ -374,7 +377,7 @@ class ConditionalVAE(nn.Module):
 
             # Take first OH actions
             actions = actions[:, :self.obs_horizon]
-            assert is_pad is not None, "Is pad cannot be None"
+            assert is_pad is not None, 'is pad cannot be None'
             is_pad = is_pad[:, :self.obs_horizon]
 
             action_embedding = self.encoder_action_proj(actions)
@@ -397,7 +400,8 @@ class ConditionalVAE(nn.Module):
             enc_output = self.encoder(encoder_input) # TODO: fix
             cls_output = enc_output[0]
 
-            mu, logvar = torch.split(enc_output, self.dim_latent, dim=1)
+            latent_projection = self.latent_proj(enc_output)
+            mu, logvar = torch.split(latent_projection, self.dim_latent, dim=1)
 
             # Sample from the latent space
             latent_sample = self.reparametrize(mu, logvar)
@@ -455,7 +459,7 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
 @hydra.main(config_path="../config/actor", config_name="act")
 def load_cfg(cfg: DictConfig):
     # print(cfg.model)
-    tk = TransformerEncoder(cfg.model)
+    tk = ConditionalVAE(cfg)
     print(tk)
 # print(tk)
 load_cfg()
