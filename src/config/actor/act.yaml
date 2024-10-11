@@ -20,9 +20,9 @@ inference:
 
 
 ConditionalVAE:
-  dim_state: 10
+  dim_state: 58
   dim_latent: 16
-  dim_action: 58
+  dim_action: 10
 
   TransformerEncoder:
     num_layers: 4
@@ -37,24 +37,26 @@ ConditionalVAE:
       normalize_before: False
 
   ActionTransformer:
-    num_heads: 8
-    num_encoder_layers: 6
-    num_decoder_layers: 6
+    dim_model: 512  # Parent parameters such as 'dim_model' automatically propagate to and are shared by children of 'ActionTransformer' unless overriden.
 
     TransformerEncoder:
-      dim_model: 512
-      dim_feedforward: 2048
-      dropout: 0.1
-      activation: relu
-      normalize_before: False
+      num_layers: 6
+      layer_norm: True
+      TransformerEncoderLayer:
+        num_heads: 8
+        dim_feedforward: 2048
+        dropout: 0.1
+        activation: relu
+        normalize_before: False
 
     TransformerDecoder:
-      dim_model: 512
-      num_decoder_layers: 6
-      dim_feedforward: 2048
-      dropout: 0.1
-      activation: relu
-      normalize_before: False
+      num_layers: 6
+      TransformerDecoderLayer:
+        num_heads: 8
+        dim_feedforward: 2048
+        dropout: 0.1
+        activation: relu
+        normalize_before: False
 
 
 
