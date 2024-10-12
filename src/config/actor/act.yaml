@@ -10,7 +10,7 @@ obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
 optimization:
-  ewise_reconstruction_loss_fn: l1_loss
+  ewise_reconstruction_loss_fn: l1_loss # Any loss implemented by torch.nn.functional (eg. l1_loss, l2_loss) etc..
   beta_kl: 10
 
 inference:
@@ -32,7 +32,7 @@ ConditionalVAE:
       num_heads: 8
       dim_feedforward: 2048
       dropout: 0.1
-      activation: relu
+      activation: relu # Can specify any activation function implemented by torch.nn.functional
       normalize_before: False
 
   ActionTransformer:
