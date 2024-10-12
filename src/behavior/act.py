@@ -8,7 +8,7 @@ from queue import Queue
 from src.behavior.base import Actor
 from typing import Tuple, Union
 from omegaconf import DictConfig
-from typing import Optional, Any, Callable, List, Iterable, Set, Type
+from typing import Optional, Any, Callable, List, Iterable, Set, Type, Dict
 from torch import Tensor
 from copy import deepcopy
 
@@ -348,7 +348,8 @@ class ConditionalVAE(ModuleConfigurator):
         self.dim_hidden = self.action_transformer.dim_model
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
-        # Learnable embeddings for action chunking, where each embedding corresponds to a chunk of actions and serves as input queries to the transformer decoder for predicting action sequences.
+
+        # Learnable embeddings for action chunking
         self.query_embedding = nn.Embedding(action_horizon, self.dim_hidden)
 
         # Additional CVAE encoder parameters
@@ -418,8 +419,7 @@ class ConditionalVAE(ModuleConfigurator):
 
         # Forward pass (latent_embedding, decoder_state_embedding) though the CVAE decoder
         state_embedding_decoder_input = self.input_proj_robot_state(obs_state)
-        # TODO: cleanup
-        # Is self.additional_position_embed.weight wrong shape?
+
         hs = self.action_transformer(None,
                                      self.query_embedding.weight,
                                      None,
@@ -433,6 +433,7 @@ class ConditionalVAE(ModuleConfigurator):
         return a_hat, is_pad_hat, mu, logvar
 
     def get_sinusoid_encoding_table(self, n_position: int, d_hid: int):
+        # TODO: this will break torchscript!
         def get_position_angle_vec(position: np.ndarray):
             return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
 
@@ -456,6 +457,24 @@ class ConditionalVAE(ModuleConfigurator):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + std * eps
+
+    def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor, is_pad_hat: Tensor,
+                                    is_pad: Tensor) -> Tensor:
+        action_gt = action_gt[:, :a_hat.size(1)]
+        is_pad = is_pad[:, :a_hat.size(1)]
+
+        ewise_recons_loss = self.reconstruction_loss(action_gt, a_hat)
+        mean_ewise_recons_loss_pad = (ewise_recons_loss * ~is_pad.unsqueeze(-1)).mean()
+
+        return mean_ewise_recons_loss_pad
+
+    def compute_loss(self, a_hat: Tensor, is_pad_hat: Tensor, mu: Tensor, logvar: Tensor,
+                     action_gt: Tensor, is_pad: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        total_kld, dimension_wise_kld, mean_kld = kl_divergence(mu, logvar)
+        mean_recons_loss = self.compute_reconstruction_loss(a_hat, action_gt, is_pad_hat, is_pad)
+
+        loss = mean_recons_loss + self.beta_kl * total_kld
+        return loss, mean_recons_loss, total_kld
 
 
 def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
@@ -483,6 +502,46 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
     mean_kld = klds.mean(1).mean(0, True)
 
     return total_kld, dimension_wise_kld, mean_kld
+
+
+class ACTPolicy(Actor):
+    def __init__(
+        self,
+        device: Union[str, torch.device],
+        cfg: DictConfig,
+    ) -> None:
+        super().__init__(device, cfg)
+        self.actor_cfg = cfg.actor
+
+        self.model = ConditionalVAE(cfg, cfg.action_horizon).to(device)
+
+    # === Inference ===
+    def _normalized_action(self, nobs: torch.Tensor) -> torch.Tensor:
+        # TODO: impl
+        pass
+
+    def compute_loss(self, batch: Dict[str, Tensor]) -> Tuple[torch.Tensor, dict]:
+        """Compute the loss during training.
+
+        Args:
+            batch (Dict[str, Tensor]): Dictionary of tensors containing batch of normalized actions
+              and observations.
+
+        Returns:
+            Tuple[torch.Tensor, dict]: Scalar loss and loss dictionary.
+        """
+        # Note: State already normalized in the dataset
+        obs_cond = self._training_obs(batch, flatten=self.flatten_obs)
+        naction = batch["action"]
+        B, AH, _ = naction.shape
+
+        is_pad = torch.zeros((B, AH))
+        is_pad[self.pred_horizon:] = 1
+        is_pad = is_pad.type(torch.bool)
+
+        a_hat, is_pad_hat, mu, logvar = self.model(obs_cond, naction, is_pad)
+
+
 
 
 @hydra.main(config_path="../config/actor", config_name="act")
