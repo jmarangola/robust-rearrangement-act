@@ -333,7 +333,7 @@ class ActionTransformer(ModuleConfigurator):
 
 
 class ConditionalVAE(ModuleConfigurator):
-    def __init__(self, cfg: DictConfig) -> None:
+    def __init__(self, cfg: DictConfig, action_horizon: int) -> None:
         """Conditional variational autoencoder for training an action chunking policy.
 
         Args:
@@ -349,7 +349,7 @@ class ConditionalVAE(ModuleConfigurator):
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
         # Learnable embeddings for action chunking, where each embedding corresponds to a chunk of actions and serves as input queries to the transformer decoder for predicting action sequences.
-        self.query_embedding = nn.Embedding(self.action_chunk_size, self.dim_hidden)
+        self.query_embedding = nn.Embedding(action_horizon, self.dim_hidden)
 
         # Additional CVAE encoder parameters
         self.cls_embedding = nn.Embedding(1, self.dim_hidden)
@@ -359,7 +359,7 @@ class ConditionalVAE(ModuleConfigurator):
         self.input_proj_robot_state = nn.Linear(self.dim_state, self.dim_hidden)
 
         # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
-        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(1 + 1 + self.action_chunk_size, self.dim_hidden))  # [CLS], qpos, a_seq
+        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + action_horizon, self.dim_hidden))  # [CLS], qpos, a_seq
 
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
@@ -375,7 +375,7 @@ class ConditionalVAE(ModuleConfigurator):
         # Actions: (B, OH, A)
         is_training = actions is not None
         if is_training:
-            B, _ = actions
+            B, _, _ = actions.shape
 
             action_embedding = self.encoder_action_proj(actions)  # (B, seq, hidden)
             obs_embedding = self.encoder_state_proj(obs_state)  # (B, hidden)
@@ -386,7 +386,7 @@ class ConditionalVAE(ModuleConfigurator):
 
             # Construct the input to the encoder
             encoder_input = torch.cat([cls_embedding, obs_embedding, action_embedding], axis=1)  #  (bs, seq+1, hidden_dim)
-            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim)
+            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim) THIS shape is wrong?
 
             # Do not mask [CLS]
             cls_joint_is_pad = torch.full((B, 2), False).to(obs_state.device)  # False: not a padding
@@ -408,6 +408,7 @@ class ConditionalVAE(ModuleConfigurator):
 
             # Use reparamatrization trick to efficiently sample from the posterior
             # for the decoder
+            # (B, hidden)
             latent_sample = self.reparametrize(mu, logvar)
             latent_input = self.latent_out_proj(latent_sample)
         else:
@@ -485,10 +486,16 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
 
 
 @hydra.main(config_path="../config/actor", config_name="act")
-def load_cfg(cfg: DictConfig):
-    # print(cfg.model)
-    tk = ConditionalVAE(cfg)
-    print(tk)
+def main(cfg: DictConfig):
+    action_horizon = 32
+    model = ConditionalVAE(cfg, action_horizon)
+    state = torch.randn(27, 58)
+    actions = torch.randn(27, action_horizon, 10)
+    is_pad = (torch.randn(27, action_horizon) > 0.5).type(torch.bool)
+    a_hat, pad_hat, mu, logvar = model(state, actions, is_pad=is_pad)
+    print(logvar)
 
 
-load_cfg()
+if __name__ == "__main__":
+    main()
+
