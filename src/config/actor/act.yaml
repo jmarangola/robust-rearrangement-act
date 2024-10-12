@@ -10,15 +10,13 @@ obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
 optimization:
-  loss_fn: L1Loss
-  optimizer: adam
+  ewise_reconstruction_loss_fn: l1_loss
   beta_kl: 10
 
 inference:
   temporal_ensemble_m: 0.01
 
-
-
+# TODO: Move to a model config, specify default in this config
 ConditionalVAE:
   dim_state: 58
   dim_latent: 32

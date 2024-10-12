@@ -18,10 +18,10 @@ def _get_module_clones(module: object, n: int) -> nn.Module:
     return nn.ModuleList([deepcopy(module) for _ in range(n)])
 
 
-def _get_activation_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor]:
+def _get_nnf_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor]:
     """
-    Returns the specified activation function from torch.nn.functional or raises a RuntimeError for invalid input.
-    Supports all activation functions implemented by torch.nn.functional.
+    Returns the specified function from torch.nn.functional or raises a RuntimeError for invalid input.
+    Supports all functions implemented by torch.nn.functional.
     """
     if hasattr(F, activation):
         return getattr(F, activation)
@@ -94,7 +94,7 @@ class TransformerEncoderLayer(ModuleConfigurator):
         self.dropout1 = nn.Dropout(self.dropout)
         self.dropout2 = nn.Dropout(self.dropout)
 
-        self.activation = _get_activation_fn(self.activation)
+        self.activation = _get_nnf_fn(self.activation)
         self.normalize_before = self.normalize_before
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -193,7 +193,7 @@ class TransformerDecoderLayer(ModuleConfigurator):
         self.dropout2 = nn.Dropout(self.dropout)
         self.dropout3 = nn.Dropout(self.dropout)
 
-        self.activation = _get_activation_fn(self.activation)
+        self.activation = _get_nnf_fn(self.activation)
         self.normalize_before = self.normalize_before
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -458,23 +458,6 @@ class ConditionalVAE(ModuleConfigurator):
         eps = torch.randn_like(std)
         return mu + std * eps
 
-    def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor, is_pad_hat: Tensor,
-                                    is_pad: Tensor) -> Tensor:
-        action_gt = action_gt[:, :a_hat.size(1)]
-        is_pad = is_pad[:, :a_hat.size(1)]
-
-        ewise_recons_loss = self.reconstruction_loss(action_gt, a_hat)
-        mean_ewise_recons_loss_pad = (ewise_recons_loss * ~is_pad.unsqueeze(-1)).mean()
-
-        return mean_ewise_recons_loss_pad
-
-    def compute_loss(self, a_hat: Tensor, is_pad_hat: Tensor, mu: Tensor, logvar: Tensor,
-                     action_gt: Tensor, is_pad: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        total_kld, dimension_wise_kld, mean_kld = kl_divergence(mu, logvar)
-        mean_recons_loss = self.compute_reconstruction_loss(a_hat, action_gt, is_pad_hat, is_pad)
-
-        loss = mean_recons_loss + self.beta_kl * total_kld
-        return loss, mean_recons_loss, total_kld
 
 
 def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
@@ -487,7 +470,7 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-          - total_kld: The total kl divergence, summed over latent dims and averaged over the batch (minimizing this guy)
+          - total_kld: The total kl divergence, summed over latent dims and averaged over the batch.
           - dimension_wise_kld: KL divergence per latent dimension, averaged across the batch.
           - mean_kld: Mean KL divergence, averaged over both batch and latent dimension.
 
@@ -512,15 +495,22 @@ class ACTPolicy(Actor):
     ) -> None:
         super().__init__(device, cfg)
         self.actor_cfg = cfg.actor
-
+        # TODO: implement beta scheduling
+        self.beta_kl = cfg.optimization.beta_kl
+        self.ewise_reconstruction_loss = _get_nnf_fn(
+            self.optimization.ewise_reconstruction_loss_fn
+        )
         self.model = ConditionalVAE(cfg, cfg.action_horizon).to(device)
 
     # === Inference ===
     def _normalized_action(self, nobs: torch.Tensor) -> torch.Tensor:
         # TODO: impl
+
+        # TODO: impl temporal ensembling
         pass
 
-    def compute_loss(self, batch: Dict[str, Tensor]) -> Tuple[torch.Tensor, dict]:
+    def compute_loss(self,
+                     batch: Dict[str, Tensor]) -> Tuple[torch.Tensor, dict]:
         """Compute the loss during training.
 
         Args:
@@ -535,13 +525,30 @@ class ACTPolicy(Actor):
         naction = batch["action"]
         B, AH, _ = naction.shape
 
-        is_pad = torch.zeros((B, AH))
-        is_pad[self.pred_horizon:] = 1
+        is_pad = torch.zeros((B, AH), device=self.device)
+        is_pad[:, self.pred_horizon:] = 1
         is_pad = is_pad.type(torch.bool)
 
-        a_hat, is_pad_hat, mu, logvar = self.model(obs_cond, naction, is_pad)
+        a_hat, _, mu, logvar = self.model(obs_cond, naction, is_pad)
 
+        # Enforce the prior
+        total_kld, _, _ = kl_divergence(mu, logvar)
+        # Compute the action reconstruction loss, discounting padded actions
+        mean_recons_loss = self.compute_reconstruction_loss(a_hat, naction, is_pad)
 
+        loss = mean_recons_loss + self.beta_kl * total_kld
+
+        return loss, {'total_kld': total_kld, 'mean_reconstruction': mean_recons_loss}
+
+    def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor,
+                                    is_pad: Tensor) -> Tensor:
+        action_gt = action_gt[:, :a_hat.size(1)]
+        is_pad = is_pad[:, :a_hat.size(1)]
+
+        ewise_recons_loss = self.ewise_reconstruction_loss(action_gt, a_hat)
+        mean_ewise_recons_loss_pad = (ewise_recons_loss * ~is_pad.unsqueeze(-1)).mean()
+
+        return mean_ewise_recons_loss_pad
 
 
 @hydra.main(config_path="../config/actor", config_name="act")
