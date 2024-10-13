@@ -18,7 +18,7 @@ def _get_module_clones(module: object, n: int) -> nn.Module:
     return nn.ModuleList([deepcopy(module) for _ in range(n)])
 
 
-def _get_nnf_fn(activation: str) -> Callable[[torch.Tensor], torch.Tensor]:
+def _get_nnf_fn(activation: str) -> Callable[[Tensor], Tensor]:
     """
     Returns the specified function from torch.nn.functional or raises a RuntimeError for invalid input.
     Supports all functions implemented by torch.nn.functional.
@@ -314,9 +314,12 @@ class ActionTransformer(ModuleConfigurator):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, additional_pos_embedding=None):
+    def forward(self, mask, query_embed, pos_embed, object_state_input,
+                latent_input=None, proprio_input=None,
+                additional_pos_embedding=None):
         B = proprio_input.shape[0]
-        src = torch.stack([latent_input, proprio_input], axis=0)
+
+        src = torch.stack([latent_input, proprio_input, object_state_input], axis=0)
 
         # pos embed shape: torch.Size([2, batch_size, hidden_dim])
         pos_embed = additional_pos_embedding.unsqueeze(1).repeat(1, B, 1)
@@ -333,15 +336,17 @@ class ActionTransformer(ModuleConfigurator):
 
 
 class ConditionalVAE(ModuleConfigurator):
-    def __init__(self, cfg: DictConfig, action_horizon: int) -> None:
+    def __init__(self, cfg: DictConfig) -> None:
         """Conditional variational autoencoder for training an action chunking policy.
 
         Args:
             cfg (DictConfig):
         """
-        super().__init__(self, cfg, ('dim_state', 'dim_latent',
-                                     'dim_action', "action_chunk_size"), recursive=False)
+        super().__init__(self, cfg, ('dim_robot_state', 'dim_latent',
+                                     'dim_action', 'dim_object_state',
+                                     'action_chunk_size'), recursive=False)
 
+        action_horizon = cfg.action_horizon
         self.action_transformer = self.build(cfg, type(self), ActionTransformer)
         self.encoder = self.build(cfg, type(self), TransformerEncoder)
 
@@ -355,22 +360,25 @@ class ConditionalVAE(ModuleConfigurator):
         # Additional CVAE encoder parameters
         self.cls_embedding = nn.Embedding(1, self.dim_hidden)
         self.encoder_action_proj = nn.Linear(self.dim_action, self.dim_hidden)
-        self.encoder_state_proj = nn.Linear(self.dim_state, self.dim_hidden)
+        self.encoder_state_proj = nn.Linear(self.dim_robot_state, self.dim_hidden)
         self.latent_proj_hidden = nn.Linear(self.dim_hidden, self.dim_latent * 2)  # Project to latent space represented by a mean and a variance ( * 2 )
-        self.input_proj_robot_state = nn.Linear(self.dim_state, self.dim_hidden)
+        self.input_proj_robot_state = nn.Linear(self.dim_robot_state, self.dim_hidden)
+        # Projection from object state to decoder input space
+        self.input_proj_obj_state = nn.Linear(self.dim_object_state, self.dim_hidden)
 
         # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
         self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + action_horizon, self.dim_hidden))  # [CLS], qpos, a_seq
 
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
-        self.positional_embeddings = nn.Embedding(2, self.dim_hidden)  # additional embeddings for proprio, latent
+        self.positional_embeddings = nn.Embedding(3, self.dim_hidden)  # additional embeddings for proprio, latent and object state
 
     def forward(self,
-                obs_state: torch.Tensor,
-                actions: Optional[torch.Tensor] = None,
-                is_pad: Optional[torch.Tensor] = None
-                ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+                robot_state: Tensor,
+                obj_state: Tensor,
+                actions: Optional[Tensor] = None,
+                is_pad: Optional[Tensor] = None
+                ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]:
 
         # Training
         # Actions: (B, OH, A)
@@ -379,18 +387,19 @@ class ConditionalVAE(ModuleConfigurator):
             B, _, _ = actions.shape
 
             action_embedding = self.encoder_action_proj(actions)  # (B, seq, hidden)
-            obs_embedding = self.encoder_state_proj(obs_state)  # (B, hidden)
-            obs_embedding = torch.unsqueeze(obs_embedding, axis=1)  # (B, 1, hidden)
+
+            robot_state_embedding = self.encoder_state_proj(robot_state)  # (B, hidden)
+            robot_state_embedding = torch.unsqueeze(robot_state_embedding, axis=1)  # (B, 1, hidden)
 
             cls_embedding = self.cls_embedding.weight  # (1, hidden)
             cls_embedding = torch.unsqueeze(cls_embedding, axis=0).repeat(B, 1, 1)  #  (B, 1, hidden)
 
             # Construct the input to the encoder
-            encoder_input = torch.cat([cls_embedding, obs_embedding, action_embedding], axis=1)  #  (bs, seq+1, hidden_dim)
+            encoder_input = torch.cat([cls_embedding, robot_state_embedding, action_embedding], axis=1)  #  (bs, seq+1, hidden_dim)
             encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim) THIS shape is wrong?
 
             # Do not mask [CLS]
-            cls_joint_is_pad = torch.full((B, 2), False).to(obs_state.device)  # False: not a padding
+            cls_joint_is_pad = torch.full((B, 2), False).to(robot_state.device)  # False: not a padding
             is_pad = torch.cat([cls_joint_is_pad, is_pad], axis=1)   #  (B, seq + 1)
 
             # Get positional encoding
@@ -414,17 +423,21 @@ class ConditionalVAE(ModuleConfigurator):
             latent_input = self.latent_out_proj(latent_sample)
         else:
             # Inference
-            latent_sample = torch.zeros([B, self.latent_dim], dtype=torch.float32).to(obs_state.device)
+            mu = logvar = None
+            latent_sample = torch.zeros([B, self.latent_dim],
+                                        dtype=torch.float32).to(robot_state.device)
             latent_input = self.latent_out_proj(latent_sample)
 
-        # Forward pass (latent_embedding, decoder_state_embedding) though the CVAE decoder
-        state_embedding_decoder_input = self.input_proj_robot_state(obs_state)
+        obj_state_embedding = self.input_proj_obj_state(obj_state)
 
+        # Forward pass (latent_embedding, decoder_state_embedding) though the CVAE decoder
+        robot_state_decoder_input_embedding = self.input_proj_robot_state(robot_state)
         hs = self.action_transformer(None,
                                      self.query_embedding.weight,
                                      None,
+                                     obj_state_embedding,
                                      latent_input=latent_input,
-                                     proprio_input=state_embedding_decoder_input,
+                                     proprio_input=robot_state_decoder_input_embedding,
                                      additional_pos_embedding=self.positional_embeddings.weight)[0]
 
         a_hat = self.action_head(hs)
@@ -444,7 +457,7 @@ class ConditionalVAE(ModuleConfigurator):
 
         return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
-    def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    def reparametrize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """Sample from p(z) using the reparameterization trick.
 
         Args:
@@ -459,17 +472,16 @@ class ConditionalVAE(ModuleConfigurator):
         return mu + std * eps
 
 
-
-def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor):
+def kl_divergence(mu: Tensor, logvar: Tensor):
     """Computes the kl-divergence between the approximate posterior q(z|x)
         and the standard normal prior N(0, 1).
 
     Args:
-        mu (torch.Tensor): Mean of approximate posterior distribution, shape (B, latent_dim)
-        logvar (torch.Tensor): Log-variance of approximate posterior distribution, shape (B, latent_dim)
+        mu (Tensor): Mean of approximate posterior distribution, shape (B, latent_dim)
+        logvar (Tensor): Log-variance of approximate posterior distribution, shape (B, latent_dim)
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        Tuple[Tensor, Tensor, Tensor]:
           - total_kld: The total kl divergence, summed over latent dims and averaged over the batch.
           - dimension_wise_kld: KL divergence per latent dimension, averaged across the batch.
           - mean_kld: Mean KL divergence, averaged over both batch and latent dimension.
@@ -496,21 +508,34 @@ class ACTPolicy(Actor):
         super().__init__(device, cfg)
         self.actor_cfg = cfg.actor
         # TODO: implement beta scheduling
-        self.beta_kl = cfg.optimization.beta_kl
-        self.ewise_reconstruction_loss = _get_nnf_fn(
-            self.optimization.ewise_reconstruction_loss_fn
-        )
-        self.model = ConditionalVAE(cfg, cfg.action_horizon).to(device)
+        self.beta_kl = cfg.actor.beta_kl
+        # self.ewise_reconstruction_loss = self.loss_fn
+        self.model = ConditionalVAE(cfg.actor).to(device)
 
     # === Inference ===
-    def _normalized_action(self, nobs: torch.Tensor) -> torch.Tensor:
-        # TODO: impl
+    def _normalized_action(self, nobs: Tensor) -> Tensor:
+        """
+        Perform diffusion to generate actions given the observation.
+        """
+        B, AH = nobs.shape[:2]
 
-        # TODO: impl temporal ensembling
-        pass
+        # If the observation is not flattened, we need to reshape it to (B, obs_horizon, obs_dim)
+        if not self.flatten_obs and len(nobs.shape) == 2:
+            nobs = nobs.reshape(B, self.obs_horizon, self.obs_dim)
+
+        robot_state = nobs[:, :self.robot_state_dim]
+        object_state = nobs[:, self.robot_state_dim:]
+
+        is_pad = torch.zeros((B, AH), device=self.device)
+        is_pad[:, self.pred_horizon:] = 1
+        is_pad = is_pad.type(torch.bool)
+
+        a_hat, _, _, _ = self.model(robot_state, object_state, None, is_pad)
+
+        return a_hat
 
     def compute_loss(self,
-                     batch: Dict[str, Tensor]) -> Tuple[torch.Tensor, dict]:
+                     batch: Dict[str, Tensor]) -> Tuple[Tensor, dict]:
         """Compute the loss during training.
 
         Args:
@@ -521,7 +546,7 @@ class ACTPolicy(Actor):
             Tuple[torch.Tensor, dict]: Scalar loss and loss dictionary.
         """
         # Note: State already normalized in the dataset
-        obs_cond = self._training_obs(batch, flatten=self.flatten_obs)
+        obs_cond = self._training_obs(batch, flatten=True)
         naction = batch["action"]
         B, AH, _ = naction.shape
 
@@ -529,37 +554,58 @@ class ACTPolicy(Actor):
         is_pad[:, self.pred_horizon:] = 1
         is_pad = is_pad.type(torch.bool)
 
-        a_hat, _, mu, logvar = self.model(obs_cond, naction, is_pad)
+        # Obtain robot state and object state
+        robot_state = obs_cond[:, :self.robot_state_dim]
+        object_state = obs_cond[:, self.robot_state_dim:]
+
+        a_hat, _, mu, logvar = self.model(robot_state, object_state, naction, is_pad)
 
         # Enforce the prior
         total_kld, _, _ = kl_divergence(mu, logvar)
+
         # Compute the action reconstruction loss, discounting padded actions
         mean_recons_loss = self.compute_reconstruction_loss(a_hat, naction, is_pad)
 
         loss = mean_recons_loss + self.beta_kl * total_kld
 
-        return loss, {'total_kld': total_kld, 'mean_reconstruction': mean_recons_loss}
+        return loss, {
+            'bc_loss': loss,
+            'total_kld_loss': total_kld,
+            'reconstruction_loss': mean_recons_loss
+        }
 
     def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor,
                                     is_pad: Tensor) -> Tensor:
         action_gt = action_gt[:, :a_hat.size(1)]
         is_pad = is_pad[:, :a_hat.size(1)]
 
-        ewise_recons_loss = self.ewise_reconstruction_loss(action_gt, a_hat)
-        mean_ewise_recons_loss_pad = (ewise_recons_loss * ~is_pad.unsqueeze(-1)).mean()
+        # ewise_recons_loss = self.ewise_reconstruction_loss(action_gt, a_hat)
+        # TODO: clean-up!
+        reconstruction_loss = nn.functional.l1_loss((a_hat * ~is_pad.unsqueeze(-1)), (action_gt * ~is_pad.unsqueeze(-1)))
+        # ignore_pad_mask = ~is_pad.unsqueeze(-1)
 
-        return mean_ewise_recons_loss_pad
+        # TODO: fix this to make it modular !
+        # reconstruction_loss = self.loss_fn(action_gt * ignore_pad_mask, a_hat * ignore_pad_mask).sum(-1).mean(dim=[1, 2])
+        # mean_ewise_recons_loss_pad = self.loss_fn(ewise_recons_loss * ~is_pad.unsqueeze(-1))
+
+        return reconstruction_loss
 
 
 @hydra.main(config_path="../config/actor", config_name="act")
 def main(cfg: DictConfig):
     action_horizon = 32
     model = ConditionalVAE(cfg, action_horizon)
-    state = torch.randn(27, 58)
+    robot_state = torch.randn(27, 16)
+    obj_state = torch.rand(27, 42)
     actions = torch.randn(27, action_horizon, 10)
     is_pad = (torch.randn(27, action_horizon) > 0.5).type(torch.bool)
-    a_hat, pad_hat, mu, logvar = model(state, actions, is_pad=is_pad)
-    print(logvar)
+    # a_hat, pad_hat, mu, logvar = model(state, actions, is_pad=is_pad)
+    a_hat, pad_hat, mu, logvar = model(robot_state, obj_state, actions, is_pad=is_pad)
+
+    # print(pad_hat.shape)
+    # Test actor
+    # policy = ACTPolicy(torch.device('cpu'), cfg)
+
 
 
 if __name__ == "__main__":

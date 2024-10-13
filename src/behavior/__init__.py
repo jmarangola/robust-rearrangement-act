@@ -45,7 +45,7 @@ def get_actor(cfg: DictConfig, device) -> Actor:
 
     # Action chunking transformer actor
     elif actor_name.lower() == "act":
-        from src.behavior.action_chunking_transformer import ACTPolicy
+        from src.behavior.act import ACTPolicy
 
         return ACTPolicy(
             cfg=cfg,

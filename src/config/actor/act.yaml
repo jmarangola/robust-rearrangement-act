@@ -4,24 +4,26 @@ defaults:
 
 name: act
 
+flatten_obs: True # Why is this not in the base config?
 action_horizon: 32
 pred_horizon: 8
 obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
-optimization:
-  ewise_reconstruction_loss_fn: l1_loss # Any loss implemented by torch.nn.functional (eg. l1_loss, l2_loss) etc..
-  beta_kl: 10
+loss_fn: MSELoss
+beta_kl: 10
 
 inference:
   temporal_ensemble_m: 0.01
 
 # TODO: Move to a model config, specify default in this config
 ConditionalVAE:
-  dim_state: 58
+  dim_robot_state: 16 # ${robot_state_dim}
+  dim_object_state: 42 # ${part_poses_dim}
+  action_chunk_size: ${pred_horizon}
+
   dim_latent: 32
   dim_action: 10
-  action_chunk_size: ${pred_horizon}
 
   TransformerEncoder:
     num_layers: 4
