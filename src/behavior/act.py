@@ -346,7 +346,6 @@ class ConditionalVAE(ModuleConfigurator):
                                      'dim_action', 'dim_object_state',
                                      'action_chunk_size'), recursive=False)
 
-        action_horizon = cfg.action_horizon
         self.action_transformer = self.build(cfg, type(self), ActionTransformer)
         self.encoder = self.build(cfg, type(self), TransformerEncoder)
 
@@ -355,7 +354,7 @@ class ConditionalVAE(ModuleConfigurator):
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
 
         # Learnable embeddings for action chunking
-        self.query_embedding = nn.Embedding(action_horizon, self.dim_hidden)
+        self.query_embedding = nn.Embedding(self.action_chunk_size, self.dim_hidden)
 
         # Additional CVAE encoder parameters
         self.cls_embedding = nn.Embedding(1, self.dim_hidden)
@@ -367,7 +366,7 @@ class ConditionalVAE(ModuleConfigurator):
         self.input_proj_obj_state = nn.Linear(self.dim_object_state, self.dim_hidden)
 
         # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
-        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + action_horizon, self.dim_hidden))  # [CLS], qpos, a_seq
+        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + self.action_chunk_size, self.dim_hidden))  # [CLS], qpos, a_seq
 
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
@@ -509,7 +508,9 @@ class ACTPolicy(Actor):
         self.actor_cfg = cfg.actor
         # TODO: implement beta scheduling
         self.beta_kl = cfg.actor.beta_kl
-        # self.ewise_reconstruction_loss = self.loss_fn
+        self.ewise_reconstruction_loss_fn = _get_nnf_fn(
+            cfg.actor.ewise_reconstruction_loss_fn
+        )
         self.model = ConditionalVAE(cfg.actor).to(device)
 
     # === Inference ===
@@ -527,7 +528,7 @@ class ACTPolicy(Actor):
         object_state = nobs[:, self.robot_state_dim:]
 
         is_pad = torch.zeros((B, AH), device=self.device)
-        is_pad[:, self.pred_horizon:] = 1
+        is_pad[:, self.model.action_chunk_size:] = 1
         is_pad = is_pad.type(torch.bool)
 
         a_hat, _, _, _ = self.model(robot_state, object_state, None, is_pad)
@@ -551,14 +552,16 @@ class ACTPolicy(Actor):
         B, AH, _ = naction.shape
 
         is_pad = torch.zeros((B, AH), device=self.device)
-        is_pad[:, self.pred_horizon:] = 1
+        is_pad[:, self.model.action_chunk_size:] = 1
         is_pad = is_pad.type(torch.bool)
 
         # Obtain robot state and object state
         robot_state = obs_cond[:, :self.robot_state_dim]
         object_state = obs_cond[:, self.robot_state_dim:]
 
-        a_hat, _, mu, logvar = self.model(robot_state, object_state, naction, is_pad)
+        a_hat, _, mu, logvar = self.model(robot_state, object_state,
+                                          naction[:, :self.model.action_chunk_size],
+                                          is_pad[:, :self.model.action_chunk_size])
 
         # Enforce the prior
         total_kld, _, _ = kl_divergence(mu, logvar)
@@ -581,7 +584,7 @@ class ACTPolicy(Actor):
 
         # ewise_recons_loss = self.ewise_reconstruction_loss(action_gt, a_hat)
         # TODO: clean-up!
-        reconstruction_loss = nn.functional.l1_loss((a_hat * ~is_pad.unsqueeze(-1)), (action_gt * ~is_pad.unsqueeze(-1)))
+        reconstruction_loss = self.ewise_reconstruction_loss_fn((a_hat * ~is_pad.unsqueeze(-1)), (action_gt * ~is_pad.unsqueeze(-1)))
         # ignore_pad_mask = ~is_pad.unsqueeze(-1)
 
         # TODO: fix this to make it modular !

@@ -10,7 +10,7 @@ pred_horizon: 8
 obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
-loss_fn: MSELoss
+ewise_reconstruction_loss_fn: l1_loss
 beta_kl: 10
 
 inference:
@@ -20,7 +20,7 @@ inference:
 ConditionalVAE:
   dim_robot_state: 16 # ${robot_state_dim}
   dim_object_state: 42 # ${part_poses_dim}
-  action_chunk_size: ${pred_horizon}
+  action_chunk_size: 8
 
   dim_latent: 32
   dim_action: 10
