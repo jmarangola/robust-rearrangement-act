@@ -569,9 +569,9 @@ class ACTPolicy(Actor):
         loss = mean_recons_loss + self.beta_kl * total_kld
 
         return loss, {
-            'bc_loss': loss,
-            'total_kld_loss': total_kld,
-            'reconstruction_loss': mean_recons_loss
+            'bc_loss': loss.item(),
+            'total_kld_loss': total_kld.item(),
+            'reconstruction_loss': mean_recons_loss.item()
         }
 
     def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor,

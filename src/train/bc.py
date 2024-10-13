@@ -474,7 +474,7 @@ def main(cfg: DictConfig):
         epoch_log["epoch_loss"] = np.mean(epoch_loss)
 
         for k, v in train_losses_log.items():
-            epoch_log[f"train_{k}"] = np.mean(v.detach().cpu().numpy())
+            epoch_log[f"train_{k}"] = np.mean(v)
 
         # Add the learning rates to the log
         for name, opt in optimizers:
