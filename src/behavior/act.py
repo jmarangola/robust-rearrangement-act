@@ -29,50 +29,32 @@ def _get_nnf_fn(activation: str) -> Callable[[Tensor], Tensor]:
         raise RuntimeError(f"Activation '{activation}' not implemented by torch.nn.functional.")
 
 
-class ModuleConfigurator(nn.Module):
+class CModule(nn.Module):
     """
     A utility class to dynamically initialize the network parameters from a config.
     """
-    def __init__(self, module: object, cfg: DictConfig, args: Iterable[str], recursive: bool = True):
+    def __init__(self, module: object, cfg: DictConfig):
         super().__init__()
-        self.set_parameters(module, cfg, set(args), recursive)
-        assert all([hasattr(module, attr) for attr in args]), \
-            f"Failed to construct '{module.__class__.__name__}'."
+        if getattr(module, 'params', None) is not None:
+            self.set_parameters(module, cfg)
+            assert all([hasattr(module, attr) for attr in module.params]), \
+                f"Failed to construct '{module.__class__.__name__}'."
 
-    def set_parameters(self, module: object, cfg: DictConfig, args: Set[str], find_recursively: bool):
-        """
-        Recursively set all parent non-dict keys as member variables in the module,
-        and allows child configurations to override parent values.
-
-        Args:
-            module (nn.Module): The module to set the attributes for.
-            cfg (DictConfig): The configuration to pull values from, if the root of the config is
-                              not the module name, the module will be recursively found.
-            args (Set[str]): A set of allowed arguments to enforce as attributes in the module.
-        """
-        module_name = module.__class__.__name__
-
-        if find_recursively:
-            for key, val in cfg.items():
-                if isinstance(val, (DictConfig, dict)) and module_name not in cfg:
-                    self.set_parameters(module, val, args, find_recursively)
-                elif key in args and not isinstance(val, (DictConfig, dict)):
-                    setattr(module, key, val)
-
-        if module_name in cfg:
-            module_cfg = cfg[module_name]
-            for key, val in module_cfg.items():
-                if key in args and not isinstance(val, (DictConfig, dict)):
-                    setattr(module, key, val)
-
-    def build(self, cfg: DictConfig, parent_type: Type, module_type: Type) -> nn.Module:
-        return module_type(cfg[parent_type.__name__]) if parent_type is not None else module_type(cfg)
+    def set_parameters(self, module: object, cfg: DictConfig):
+        # TODO: add docstring
+        for k, v in cfg.items():
+            if not isinstance(v, (DictConfig, dict)) and k in module.params:
+                setattr(module, k, v)
 
 
-class TransformerEncoderLayer(ModuleConfigurator):
+def build(module_type: Type, cfg: DictConfig) -> nn.Module:
+    return module_type(cfg[module_type.__name__])
+
+
+class TransformerEncoderLayer(CModule):
     def __init__(self,
                  cfg: DictConfig):
-        args = (
+        self.params = (
             "dim_model",
             "num_heads",
             "dim_feedforward",
@@ -80,7 +62,7 @@ class TransformerEncoderLayer(ModuleConfigurator):
             "activation",
             "normalize_before"
         )
-        super().__init__(self, cfg, args)
+        super().__init__(self, cfg)
 
         self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads,
                                                dropout=self.dropout)
@@ -142,11 +124,12 @@ class TransformerEncoderLayer(ModuleConfigurator):
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
 
-class TransformerEncoder(ModuleConfigurator):
+class TransformerEncoder(CModule):
     def __init__(self, cfg: DictConfig):
-        super().__init__(self, cfg, ("num_layers", "layer_norm"))
+        self.params = ("num_layers", "layer_norm")
+        super().__init__(self, cfg)
 
-        encoder_layer = self.build(cfg, None, TransformerEncoderLayer)
+        encoder_layer = build(TransformerEncoderLayer, cfg)
         self.layers = _get_module_clones(encoder_layer, self.num_layers)
         self.norm = nn.LayerNorm(encoder_layer.dim_model) if self.layer_norm else False
 
@@ -166,9 +149,9 @@ class TransformerEncoder(ModuleConfigurator):
         return output
 
 
-class TransformerDecoderLayer(ModuleConfigurator):
+class TransformerDecoderLayer(CModule):
     def __init__(self, cfg: DictConfig):
-        args = (
+        self.params = (
             'dim_model',
             'num_heads',
             'dim_feedforward',
@@ -176,10 +159,14 @@ class TransformerDecoderLayer(ModuleConfigurator):
             'normalize_before',
             'activation'
         )
-        super().__init__(self, cfg, args)
+        super().__init__(self, cfg)
 
-        self.self_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
-        self.multihead_attn = nn.MultiheadAttention(self.dim_model, self.num_heads, dropout=self.dropout)
+        self.self_attn = nn.MultiheadAttention(
+            self.dim_model, self.num_heads, dropout=self.dropout
+        )
+        self.multihead_attn = nn.MultiheadAttention(
+            self.dim_model, self.num_heads, dropout=self.dropout
+        )
 
         self.linear1 = nn.Linear(self.dim_model, self.dim_feedforward)
         self.dropout0 = nn.Dropout(self.dropout)
@@ -261,11 +248,12 @@ class TransformerDecoderLayer(ModuleConfigurator):
                                  tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
 
 
-class TransformerDecoder(ModuleConfigurator):
+class TransformerDecoder(CModule):
     def __init__(self, cfg: DictConfig):
-        super().__init__(self, cfg, ("num_layers",))
+        self.params = ("num_layers",)
+        super().__init__(self, cfg)
 
-        transformer_decoder_layer = self.build(cfg, None, TransformerDecoderLayer)
+        transformer_decoder_layer = build(TransformerDecoderLayer, cfg)
         self.layers = _get_module_clones(transformer_decoder_layer, self.num_layers)
         self.layer_norm = nn.LayerNorm(transformer_decoder_layer.dim_model)
         self.return_intermediate = False  # TODO parametrize
@@ -301,12 +289,12 @@ class TransformerDecoder(ModuleConfigurator):
         return output.unsqueeze(0)
 
 
-class ActionTransformer(ModuleConfigurator):
+class ActionTransformer(CModule):
     def __init__(self, cfg: DictConfig):
-        super().__init__(self, cfg, ('dim_model',))
+        super().__init__(self, cfg)
 
-        self.encoder = self.build(cfg, type(self), TransformerEncoder)
-        self.decoder = self.build(cfg, type(self), TransformerDecoder)
+        self.encoder = build(TransformerEncoder, cfg)
+        self.decoder = build(TransformerDecoder, cfg)
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -335,26 +323,29 @@ class ActionTransformer(ModuleConfigurator):
         return hs
 
 
-class ConditionalVAE(ModuleConfigurator):
+class ConditionalVAE(CModule):
     def __init__(self, cfg: DictConfig) -> None:
         """Conditional variational autoencoder for training an action chunking policy.
 
         Args:
             cfg (DictConfig):
         """
-        super().__init__(self, cfg, ('dim_robot_state', 'dim_latent',
-                                     'dim_action', 'dim_object_state',
-                                     'action_chunk_size'), recursive=False)
+        self.params = (
+            'dim_latent', 'dim_action', 'dim_object_state', 'dim_robot_state'
+        )
+        module_conf = cfg[self.__class__.__name__]
+        super().__init__(self, module_conf)
 
-        self.action_transformer = self.build(cfg, type(self), ActionTransformer)
-        self.encoder = self.build(cfg, type(self), TransformerEncoder)
+        self.pred_horizon = cfg.pred_horizon
+        self.action_transformer = build(ActionTransformer, module_conf)
+        self.encoder = build(TransformerEncoder, module_conf)
 
-        self.dim_hidden = self.action_transformer.dim_model
+        self.dim_hidden = self.action_transformer.encoder.layers[0].dim_model
         self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
         self.is_pad_head = nn.Linear(self.dim_hidden, 1)
 
         # Learnable embeddings for action chunking
-        self.query_embedding = nn.Embedding(self.action_chunk_size, self.dim_hidden)
+        self.query_embedding = nn.Embedding(self.pred_horizon, self.dim_hidden)
 
         # Additional CVAE encoder parameters
         self.cls_embedding = nn.Embedding(1, self.dim_hidden)
@@ -366,7 +357,7 @@ class ConditionalVAE(ModuleConfigurator):
         self.input_proj_obj_state = nn.Linear(self.dim_object_state, self.dim_hidden)
 
         # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
-        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + self.action_chunk_size, self.dim_hidden))  # [CLS], qpos, a_seq
+        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + self.pred_horizon, self.dim_hidden))  # [CLS], qpos, a_seq
 
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
@@ -525,24 +516,12 @@ class ACTPolicy(Actor):
         if not self.flatten_obs and len(nobs.shape) == 2:
             nobs = nobs.reshape(B, self.obs_horizon, self.obs_dim)
 
-        # TODO: implement TE!!
-        #
-        # ===
-        # use_temporal_ensembling = self.temporal_ensemble_k > 0
-        # if use_temporal_ensembling:
-        #     all_time_actions = torch.zeros(
-        #         (self.action_horizon, self.action_horizon + self.pred_horizon, self.action_dim)
-        #     ).cuda()
-
         # MVP for now
         robot_state = nobs[:, :self.robot_state_dim]
         object_state = nobs[:, self.robot_state_dim:]
-        # for t in range(self.action_horizon % self.pred_horizon):
-        #     pass
-
 
         is_pad = torch.zeros((B, AH), device=self.device)
-        is_pad[:, self.model.action_chunk_size:] = 1
+        is_pad[:, self.model.pred_horizon:] = 1
         is_pad = is_pad.type(torch.bool)
 
         a_hat, _, _, _ = self.model(robot_state, object_state, None, is_pad)
@@ -566,7 +545,7 @@ class ACTPolicy(Actor):
         B, AH, _ = naction.shape
 
         is_pad = torch.zeros((B, AH), device=self.device)
-        is_pad[:, self.model.action_chunk_size:] = 1
+        is_pad[:, self.model.pred_horizon:] = 1
         is_pad = is_pad.type(torch.bool)
 
         # Obtain robot state and object state
@@ -574,8 +553,8 @@ class ACTPolicy(Actor):
         object_state = obs_cond[:, self.robot_state_dim:]
 
         a_hat, _, mu, logvar = self.model(robot_state, object_state,
-                                          naction[:, :self.model.action_chunk_size],
-                                          is_pad[:, :self.model.action_chunk_size])
+                                          naction[:, :self.pred_horizon],
+                                          is_pad[:, :self.pred_horizon])
 
         # Enforce the prior
         total_kld, _, _ = kl_divergence(mu, logvar)
@@ -596,35 +575,11 @@ class ACTPolicy(Actor):
         action_gt = action_gt[:, :a_hat.size(1)]
         is_pad = is_pad[:, :a_hat.size(1)]
 
-        # ewise_recons_loss = self.ewise_reconstruction_loss(action_gt, a_hat)
-        # TODO: clean-up!
-        reconstruction_loss = self.ewise_reconstruction_loss_fn((a_hat * ~is_pad.unsqueeze(-1)), (action_gt * ~is_pad.unsqueeze(-1)))
-        # ignore_pad_mask = ~is_pad.unsqueeze(-1)
-
-        # TODO: fix this to make it modular !
-        # reconstruction_loss = self.loss_fn(action_gt * ignore_pad_mask, a_hat * ignore_pad_mask).sum(-1).mean(dim=[1, 2])
-        # mean_ewise_recons_loss_pad = self.loss_fn(ewise_recons_loss * ~is_pad.unsqueeze(-1))
+        ignore_mask = ~is_pad.unsqueeze(-1)
+        reconstruction_loss = self.ewise_reconstruction_loss_fn(a_hat * ignore_mask, action_gt * ignore_mask)
 
         return reconstruction_loss
 
 
-@hydra.main(config_path="../config/actor", config_name="act")
-def main(cfg: DictConfig):
-    action_horizon = 32
-    model = ConditionalVAE(cfg, action_horizon)
-    robot_state = torch.randn(27, 16)
-    obj_state = torch.rand(27, 42)
-    actions = torch.randn(27, action_horizon, 10)
-    is_pad = (torch.randn(27, action_horizon) > 0.5).type(torch.bool)
-    # a_hat, pad_hat, mu, logvar = model(state, actions, is_pad=is_pad)
-    a_hat, pad_hat, mu, logvar = model(robot_state, obj_state, actions, is_pad=is_pad)
 
-    # print(pad_hat.shape)
-    # Test actor
-    # policy = ACTPolicy(torch.device('cpu'), cfg)
-
-
-
-if __name__ == "__main__":
-    main()
 
