@@ -52,4 +52,12 @@ def get_actor(cfg: DictConfig, device) -> Actor:
             device=device
         )
 
+    elif actor_name == "residual_act":
+        from src.behavior.residual_act import ResidualACT
+
+        return ResidualACT(
+            cfg=cfg,
+            device=device
+        )
+
     raise ValueError(f"Unknown actor type: {cfg.actor}")

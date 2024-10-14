@@ -423,7 +423,8 @@ class ConditionalVAE(ModuleConfigurator):
         else:
             # Inference
             mu = logvar = None
-            latent_sample = torch.zeros([B, self.latent_dim],
+            B = robot_state.shape[0]
+            latent_sample = torch.zeros([B, self.dim_latent],
                                         dtype=torch.float32).to(robot_state.device)
             latent_input = self.latent_out_proj(latent_sample)
 
@@ -523,6 +524,10 @@ class ACTPolicy(Actor):
         # If the observation is not flattened, we need to reshape it to (B, obs_horizon, obs_dim)
         if not self.flatten_obs and len(nobs.shape) == 2:
             nobs = nobs.reshape(B, self.obs_horizon, self.obs_dim)
+
+        # TODO: implement temporal ensembling
+        #
+        #
 
         robot_state = nobs[:, :self.robot_state_dim]
         object_state = nobs[:, self.robot_state_dim:]
