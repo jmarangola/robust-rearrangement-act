@@ -1,14 +1,9 @@
-# Extend the base_actor config
 defaults:
   - base_actor
 
 name: act
+flatten_obs: True
 
-flatten_obs: True # Why is this not in the base config?
-action_horizon: 8
-pred_horizon: 8
-obs_horizon: 1
-predict_past_actions: ${predict_past_actions}
 
 ewise_reconstruction_loss_fn: l1_loss
 beta_kl: 1
@@ -16,11 +11,11 @@ beta_kl: 1
 inference:
   temporal_ensemble_m: 0.01
 
-# TODO: Move to a model config, specify default in this config
+# TODO: Fix "hardcodes" by pulling this stuff from the base config into this yaml directly using anchors
 ConditionalVAE:
-  dim_robot_state: 16 # ${robot_state_dim}
-  dim_object_state: 42 # ${part_poses_dim}
-  action_chunk_size: 8 # TODO: fix this hardcode in yaml
+  dim_robot_state: 16
+  dim_object_state: 42
+  action_chunk_size: 32
 
   dim_latent: 32
   dim_action: 10
@@ -58,6 +53,12 @@ ConditionalVAE:
         dropout: 0.1
         activation: relu
         normalize_before: False
+
+# TODO: pull these from the base config once TE is implemented
+action_horizon: 32
+pred_horizon: 32
+obs_horizon: 1
+predict_past_actions: ${predict_past_actions}
 
 
 
