@@ -517,7 +517,7 @@ class ACTPolicy(Actor):
     # === Inference ===
     def _normalized_action(self, nobs: Tensor) -> Tensor:
         """
-        Perform diffusion to generate actions given the observation.
+        Perform action chunking with temporal ensembling to generate a chunk of actions given the observations.
         """
         B, AH = nobs.shape[:2]
 
@@ -525,12 +525,21 @@ class ACTPolicy(Actor):
         if not self.flatten_obs and len(nobs.shape) == 2:
             nobs = nobs.reshape(B, self.obs_horizon, self.obs_dim)
 
-        # TODO: implement temporal ensembling
+        # TODO: implement TE!!
         #
-        #
+        # ===
+        # use_temporal_ensembling = self.temporal_ensemble_k > 0
+        # if use_temporal_ensembling:
+        #     all_time_actions = torch.zeros(
+        #         (self.action_horizon, self.action_horizon + self.pred_horizon, self.action_dim)
+        #     ).cuda()
 
+        # MVP for now
         robot_state = nobs[:, :self.robot_state_dim]
         object_state = nobs[:, self.robot_state_dim:]
+        # for t in range(self.action_horizon % self.pred_horizon):
+        #     pass
+
 
         is_pad = torch.zeros((B, AH), device=self.device)
         is_pad[:, self.model.action_chunk_size:] = 1
