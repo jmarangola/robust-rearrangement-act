@@ -690,7 +690,7 @@ class Actor(torch.nn.Module, PrintParamCountMixin, metaclass=PostInitCaller):
         pass
 
 
-class ResidualPolicy(nn.Module):
+class ResidualActor(nn.Module):
     def __init__(self,
                  device: Union[str, torch.device],
                  cfg: DictConfig,
@@ -705,7 +705,7 @@ class ResidualPolicy(nn.Module):
         self.bc_actor.actions = None
         self.bc_actor.observations = deque(maxlen=self.obs_horizon)
         self.base_nactions = deque(maxlen=self.action_horizon)
-        self.normalizer = self.bc_actor.normalizer
+        self.normalizer = LinearNormalizer()
 
         # Make the residual layers:
         # This is an MLP that takes in the state and predicted action
@@ -714,7 +714,7 @@ class ResidualPolicy(nn.Module):
         # They're cheap to compute and we can use them to both improve the
         # performance of the policy and to estimate the uncertainty of the
         # policy.
-        self.residual_policy: ResidualPolicy = hydra.utils.instantiate(
+        self.residual_policy: ResidualActor = hydra.utils.instantiate(
             cfg.actor.residual_policy,
             obs_shape=(self.timestep_obs_dim,),
             action_shape=(self.action_dim,),
@@ -741,6 +741,7 @@ class ResidualPolicy(nn.Module):
         base_state_dict = torch.load(path)
         self.bc_actor.model.load_state_dict(self.get_state_dict_from_base(base_state_dict, 'model'))
         self.normalizer.load_state_dict(self.get_state_dict_from_base(base_state_dict, 'normalizer'))
+        self.bc_actor.normalizer.set_normalizer(self.normalizer)
 
     @torch.no_grad()
     def base_action_normalized(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -762,7 +763,7 @@ class ResidualPolicy(nn.Module):
 
         obs = torch.cat([robot_state, parts_poses], dim=-1)
 
-        # Clamp the observation to be bounded to [-5, 5]
+        # Clamp the observation to be bounded to [-3, 3]
         obs = torch.clamp(obs, -3, 3)
 
         return obs
