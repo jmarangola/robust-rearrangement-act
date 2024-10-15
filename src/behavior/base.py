@@ -695,9 +695,8 @@ class RefinementActor(nn.Module):
                  device: Union[str, torch.device],
                  cfg: DictConfig,
                  bc_actor: Actor):
+        super().__init__()
         assert cfg.observation_type == 'state'
-
-        super().__init__(device, cfg)
 
         self.bc_actor = bc_actor
 
