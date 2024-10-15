@@ -5,7 +5,6 @@ from src.behavior.diffusion import DiffusionPolicy
 from src.common.geometry import proprioceptive_quat_to_6d_rotation
 from src.models.residual import ResidualPolicy
 import torch
-import torch.nn as nn
 
 
 from ipdb import set_trace as bp  # noqa
