@@ -690,7 +690,7 @@ class Actor(torch.nn.Module, PrintParamCountMixin, metaclass=PostInitCaller):
         pass
 
 
-class ResidualActor(nn.Module):
+class RefinementActor(nn.Module):
     def __init__(self,
                  device: Union[str, torch.device],
                  cfg: DictConfig,
@@ -714,7 +714,7 @@ class ResidualActor(nn.Module):
         # They're cheap to compute and we can use them to both improve the
         # performance of the policy and to estimate the uncertainty of the
         # policy.
-        self.residual_policy: ResidualActor = hydra.utils.instantiate(
+        self.residual_policy: RefinementActor = hydra.utils.instantiate(
             cfg.actor.residual_policy,
             obs_shape=(self.timestep_obs_dim,),
             action_shape=(self.action_dim,),
