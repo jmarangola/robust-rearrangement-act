@@ -53,9 +53,9 @@ def get_actor(cfg: DictConfig, device) -> Actor:
         )
 
     elif actor_name == "residual_act":
-        from src.behavior.residual_act import ResidualACT
+        from src.behavior.residual_act import ResidualActPolicy
 
-        return ResidualACT(
+        return ResidualActPolicy(
             cfg=cfg,
             device=device
         )
