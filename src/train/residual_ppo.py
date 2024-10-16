@@ -210,8 +210,8 @@ def main(cfg: DictConfig):
     agent.eval()
 
     # Set the inference steps of the actor
-    if isinstance(agent.bc_actor, DiffusionPolicy):
-        agent.bc_actor.inference_steps = 4 # TODO: this can be removed with the new, more modular design
+    if isinstance(agent, DiffusionPolicy):
+        agent.inference_steps = 4
 
     env: RLPolicyEnvWrapper = RLPolicyEnvWrapper(
         env,
