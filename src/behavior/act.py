@@ -250,13 +250,12 @@ class TransformerDecoderLayer(CModule):
 
 class TransformerDecoder(CModule):
     def __init__(self, cfg: DictConfig):
-        self.params = ("num_layers",)
+        self.params = ('num_layers', 'return_intermediate')
         super().__init__(self, cfg)
 
         transformer_decoder_layer = build(TransformerDecoderLayer, cfg)
         self.layers = _get_module_clones(transformer_decoder_layer, self.num_layers)
         self.layer_norm = nn.LayerNorm(transformer_decoder_layer.dim_model)
-        self.return_intermediate = False  # TODO parametrize
 
     def forward(self, tgt, memory,
                 tgt_mask: Optional[Tensor] = None,

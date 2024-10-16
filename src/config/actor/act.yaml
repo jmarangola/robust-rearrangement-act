@@ -6,7 +6,7 @@ flatten_obs: True
 
 
 ewise_reconstruction_loss_fn: l1_loss
-beta_kl: 1
+beta_kl: 0.1
 
 inference:
   temporal_ensemble_m: 0.01
@@ -15,7 +15,6 @@ inference:
 ConditionalVAE:
   dim_robot_state: 16
   dim_object_state: 42
-  action_chunk_size: 32
 
   dim_latent: 32
   dim_action: 10
@@ -25,38 +24,38 @@ ConditionalVAE:
     layer_norm: True
 
     TransformerEncoderLayer:
-      dim_model: 256
+      dim_model: 512
       num_heads: 8
-      dim_feedforward: 2048
+      dim_feedforward: 3200
       dropout: 0.1
       activation: relu # Can specify any activation function implemented by torch.nn.functional
       normalize_before: False
 
   ActionTransformer:
-    dim_model: 512  # Parent parameters such as 'dim_model' automatically propagate to and are shared by children of 'ActionTransformer' unless overriden.
-
     TransformerEncoder:
       num_layers: 6
       layer_norm: True
       TransformerEncoderLayer:
+        dim_model: 512
         num_heads: 8
-        dim_feedforward: 2048
+        dim_feedforward: 3200
         dropout: 0.1
         activation: relu
         normalize_before: False
 
     TransformerDecoder:
       num_layers: 6
+      return_intermediate: True
       TransformerDecoderLayer:
+        dim_model: 512
         num_heads: 8
-        dim_feedforward: 2048
+        dim_feedforward: 3200
         dropout: 0.1
         activation: relu
         normalize_before: False
 
-# TODO: pull these from the base config once TE is implemented
-action_horizon: 32
-pred_horizon: 32
+action_horizon: ${action_horizon}
+pred_horizon: ${pred_horizon}
 obs_horizon: 1
 predict_past_actions: ${predict_past_actions}
 
