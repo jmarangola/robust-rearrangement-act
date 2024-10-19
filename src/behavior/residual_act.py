@@ -59,20 +59,6 @@ class ResidualActPolicy(ACTPolicy):
         }
         self.normalizer.load_state_dict(base_normalizer_state_dict)
 
-    # def get_state_dict_from_base(self, base_state_dict: dict, name: str):
-    #     type_prefix = name + '.'
-    #     return {
-    #         key[len(type_prefix):]: value for key, value in base_state_dict.items()
-    #         if key.startswith(type_prefix)
-    #     }
-
-    # def load_base_state_dict(self, path: str):
-    #     base_state_dict = torch.load(path)
-    #     # Load the model weights
-    #     self.model.load_state_dict(self.get_state_dict_from_base(base_state_dict, 'model'))
-    #     # Load the normalizer parameters
-    #     self.normalizer.load_state_dict(self.get_state_dict_from_base(base_state_dict, 'normalizer'))
-
     @torch.no_grad()
     def action(self, obs: Dict[str, torch.Tensor]):
         """
