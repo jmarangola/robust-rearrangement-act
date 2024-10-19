@@ -85,7 +85,7 @@ _Note: The `--no-cache-dir` and `--force-reinstall` flags are used to avoid pote
 
 _Note: Please ignore Pip's notice that `[notice] To update, run: pip install --upgrade pip` as the current version of Pip is necessary for compatibility with the codebase._
 
-_Tip: The documentation for IsaacGym  is located inside the `docs` directory in the unzipped actactfolder and is not available online. You can open the `index.html` file in your browser to access the documentation._
+_Tip: The documentation for IsaacGym is located inside the `docs` directory in the unzipped folder and is not available online. You can open the `index.html` file in your browser to access the documentation._
 
 You can now safely delete the downloaded zipped file and navigate back to the root directory for your project.
 
