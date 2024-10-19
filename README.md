@@ -85,9 +85,9 @@ _Note: The `--no-cache-dir` and `--force-reinstall` flags are used to avoid pote
 
 _Note: Please ignore Pip's notice that `[notice] To update, run: pip install --upgrade pip` as the current version of Pip is necessary for compatibility with the codebase._
 
-_Tip: The documentation for IsaacGym  is located inside the `docs` directory in the unzipped folder and is not available online. You can open the `index.html` file in your browser to access the documentation._
+_Tip: The documentation for IsaacGym  is located inside the `docs` directory in the unzipped actactfolder and is not available online. You can open the `index.html` file in your browser to access the documentation._
 
-You can now safely delete the downloaded zipped file and navigate back to the root directory for your project. 
+You can now safely delete the downloaded zipped file and navigate back to the root directory for your project.
 
 
 ### Install FurnitureBench
@@ -213,6 +213,7 @@ The pre-training runs can then be launched with one of these commands (the `dryr
 ```bash
 python -m src.train.bc +experiment=state/diff_unet task=one_leg randomness=low dryrun=false
 python -m src.train.bc +experiment=state/diff_unet task=one_leg randomness=med dryrun=false
+python -m src.train.bc +experiment=state/act task=one_leg randomness=low dryrun=false
 ```
 
 **`lamp`**
@@ -309,6 +310,7 @@ python -m src.train.residual_ppo \
     debug=false
 ```
 
+
 Of course, to fine-tune the rest of the tasks, you can substitute `one_leg` with the respective task name and `low` with `med` for the medium randomness level.
 
 Also, we used the following `num_env_steps` for the different tasks:
@@ -339,7 +341,7 @@ To evaluate the weights, you can run the evaluation script just like for the BC 
 
 
 ## Notes on sim-to-real (in development)
-Please see [our notes on using Isaac Sim to re-render trajectories in service of visual sim-to-real](src/sim2real/readme.md). With the ongoing developments of Isaac Sim and IsaacLab, this area of the pipeline is not as mature and is still under ongoing development. The `src/sim2real` folder contains the scripts we used for converting assets to USD for use with Isaac Sim and re-rendering trajectories collected either via teleoperation or rolling out trained agents. 
+Please see [our notes on using Isaac Sim to re-render trajectories in service of visual sim-to-real](src/sim2real/readme.md). With the ongoing developments of Isaac Sim and IsaacLab, this area of the pipeline is not as mature and is still under ongoing development. The `src/sim2real` folder contains the scripts we used for converting assets to USD for use with Isaac Sim and re-rendering trajectories collected either via teleoperation or rolling out trained agents.
 
 
 ## Notes on real world evaluation (in development)
@@ -351,7 +353,7 @@ Please see [our notes on running on the real world Franka Panda robot](src/real/
 
 If you find the paper or the code useful, please consider citing the paper:
 
-```tex      
+```tex
 @article{ankile2024imitation,
   title={From Imitation to Refinement--Residual RL for Precise Visual Assembly},
   author={Ankile, Lars and Simeonov, Anthony and Shenfeld, Idan and Torne, Marcel and Agrawal, Pulkit},

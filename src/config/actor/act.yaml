@@ -8,8 +8,6 @@ flatten_obs: True
 ewise_reconstruction_loss_fn: l1_loss
 beta_kl: 0.1
 
-inference:
-  temporal_ensemble_m: 0.01
 
 # TODO: Fix "hardcodes" by pulling this stuff from the base config into this yaml directly using anchors
 ConditionalVAE:
@@ -56,8 +54,8 @@ ConditionalVAE:
 
 action_horizon: ${action_horizon}
 pred_horizon: ${pred_horizon}
-obs_horizon: 1
-predict_past_actions: ${predict_past_actions}
+obs_horizon: ${obs_horizon}
+predict_past_actions: False
 
 
 

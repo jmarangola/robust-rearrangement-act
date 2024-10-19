@@ -90,17 +90,7 @@ class TransformerEncoderLayer(CModule):
         self.activation = _get_nnf_fn(self.activation)
         self.normalize_before = self.normalize_before
 
-    def with_pos_embed(self, input: Tensor, pos: Optional[Tensor]):
-        """Adds the positional embedding (learned) to the input to the layer.
-
-        Args:
-            tensor (Tensor): The input tensor to the transformer encoder layer.
-            pos (Optional[Tensor]): An optionally learned positional embedding (3, hidden_dim)
-                                    corresponding to (latent, proprio, obj_state).
-
-        Returns:
-            Tensor: Input tensor if no positional embedding specified, input + positional embedding otherwise.
-        """
+    def with_pos_embed(self, input: Tensor, pos: Optional[Tensor] = None):
         return input if pos is None else input + pos
 
     def forward_post(self,
@@ -280,20 +270,22 @@ class ActionTransformer(CModule):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, query_embed, object_state_input,
-                latent_input, proprio_input, additional_pos_embedding):
+    def forward(self, query_embed: Tensor,
+                object_state_input: Tensor,
+                latent_input: Tensor,
+                proprio_input: Tensor,
+                additional_modal_pos_embedding: Tensor) -> Tensor:
         B = proprio_input.shape[0]
 
         src = torch.stack([latent_input, proprio_input, object_state_input], axis=0)
 
-        # pos embed shape: torch.Size([2, batch_size, hidden_dim])
-        pos_embed = additional_pos_embedding.unsqueeze(1).repeat(1, B, 1)
-        # query embed shape: torch.Size([num_queries, batch_size, hidden_dim])
+        # Modal pos embed shape: torch.Size([2, batch_size, hidden_dim])
+        modal_pose_embed = additional_modal_pos_embedding.unsqueeze(1).repeat(1, B, 1)
         query_embed = query_embed.unsqueeze(1).repeat(1, B, 1)
 
         tgt = torch.zeros_like(query_embed)
-        memory = self.encoder(src, pos=pos_embed)
-        hs = self.decoder(tgt, memory, pos=pos_embed, query_pos=query_embed)
+        memory = self.encoder(src, pos=modal_pose_embed)
+        hs = self.decoder(tgt, memory, pos=modal_pose_embed, query_pos=query_embed)
         hs = hs.transpose(1, 2)
 
         return hs
@@ -313,6 +305,9 @@ class ConditionalVAE(CModule):
         super().__init__(self, module_conf)
 
         self.pred_horizon = cfg.pred_horizon
+        self.obs_horizon = cfg.obs_horizon
+
+        assert self.obs_horizon == 1, "Markov property is assumed by ACT CVAE."
         self.action_transformer = build(ActionTransformer, module_conf)
 
         # CVAE encoder, the word encoder is a bit overloaded here. There is an encoder
@@ -336,56 +331,61 @@ class ConditionalVAE(CModule):
         # Projection from object state to decoder input space
         self.input_proj_obj_state = nn.Linear(self.dim_object_state, self.dim_hidden)
 
-        # TODO: cleanup -- this is only called once so not a big deal, but still really ugly
-        # [CLS], qpos, a_seq
-        self.register_buffer('pos_table', self.get_sinusoid_encoding_table(2 + self.pred_horizon, self.dim_hidden))
+        # Register a table for positional encodings which is instantiated as a buffer so it does not get updated during backprop
+        # We can leverage the same positional encoding scheme for actions as we do for observations (non-Markovian case)
+        self.register_positional_enc_table(
+            'pos_enc_table', 2 + self.pred_horizon, self.dim_hidden
+        )
 
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
 
         # Additional positional embeddings for proprio, latent and object state
         # Each corresponding corresponds to a different type of input feature (proprio, latent or object state)
-        # and the model can leverage these positional embeddings to learn to (1) distinguish between these features
-        # and (2) use them in meaningful ways
+        # and the model can leverage these positional embeddings to learn to distinguish between these features and learn higher level relationships between them
         self.positional_embeddings = nn.Embedding(3, self.dim_hidden)
 
     def forward(self, robot_state: Tensor, obj_state: Tensor,
                 actions: Optional[Tensor] = None
                 ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]:
+        """
+        Forward pass for the ACT as a CVAE.
 
-        # Training
-        # Actions: (B, OH, A)
+        Args:
+            robot_state (Tensor): Robot state embedding (B, obs_horizon, R)
+            obj_state (Tensor): Object state embedding (B, obs_horizon, O)
+            actions (Optional[Tensor], optional): Ground truth actions (B, pred_horizon, A). Defaults to None.
+
+        Returns:
+            Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]: _description_
+        """
         is_training = actions is not None
+
         if is_training:
             B, _, _ = actions.shape
 
-            action_embedding = self.encoder_action_proj(actions)  # (B, seq, hidden)
+            action_embedding = self.encoder_action_proj(actions)
+            robot_state_embedding = self.encoder_state_proj(robot_state).unsqueeze(1)
 
-            robot_state_embedding = self.encoder_state_proj(robot_state)  # (B, hidden)
-            robot_state_embedding = torch.unsqueeze(robot_state_embedding, axis=1)  # (B, 1, hidden)
-
-            global_context = self.global_context_embedding.weight  # (1, hidden)
-            global_context = torch.unsqueeze(global_context, axis=0).repeat(B, 1, 1)   # (B, 1, hidden)
+            global_context = self.global_context_embedding.weight
+            global_context = torch.unsqueeze(global_context, axis=0).repeat(B, 1, 1)
 
             # Construct the input to the encoder
-            encoder_input = torch.cat([global_context, robot_state_embedding, action_embedding], axis=1)  #  (bs, seq+1, hidden_dim)
-            encoder_input = encoder_input.permute(1, 0, 2)  # (seq+1, bs, hidden_dim)
+            # Note: here the object state is not encoded into the input. Instead, object state is treated as a conditional
+            # variable that informs the decoder about contextual information in the environment without cluttering the
+            # learned latent space.
+            encoder_input = torch.cat(
+                [global_context, robot_state_embedding, action_embedding], axis=1
+            ).permute(1, 0, 2)
 
-            # Get positional encoding
-            # TODO: cleanup
-            # this is really ugly
-            pos_enc = self.pos_table.clone().detach()
-            pos_enc = pos_enc.permute(1, 0, 2)  # (seq+1, 1, hidden)
-
-            # Pass through the encoder
-            encoder_output = self.encoder(encoder_input, pos=pos_enc)
-            encoder_output = encoder_output[0]  # Take [CLS] output only
+            # Pass through the encoder, take [global_context] output only
+            encoder_output = self.encoder(encoder_input, pos=self.pos_enc_table)
+            encoder_output = encoder_output[0]
 
             latent_embed = self.latent_proj_hidden(encoder_output)
             mu, logvar = torch.split(latent_embed, self.dim_latent, dim=1)
 
             # Use reparamatrization trick to efficiently sample from the posterior
-            # (B, hidden)
             latent_sample = self.reparametrize(mu, logvar)
             latent_input = self.latent_out_proj(latent_sample)
         else:
@@ -397,30 +397,38 @@ class ConditionalVAE(CModule):
             latent_input = self.latent_out_proj(latent_sample)
 
         obj_state_embedding = self.input_proj_obj_state(obj_state)
-
-        # Forward pass (latent_embedding, decoder_state_embedding) though the CVAE decoder
         robot_state_decoder_input_embedding = self.input_proj_robot_state(robot_state)
+
+        # Forward pass through CVAE decoder
         hs = self.action_transformer(self.query_embedding.weight,
                                      obj_state_embedding,
-                                     latent_input=latent_input,
-                                     proprio_input=robot_state_decoder_input_embedding,
-                                     additional_pos_embedding=self.positional_embeddings.weight)[0]
+                                     latent_input,
+                                     robot_state_decoder_input_embedding,
+                                     self.positional_embeddings.weight)[0]
 
         a_hat = self.action_head(hs)
-
         return a_hat, mu, logvar
 
-    def get_sinusoid_encoding_table(self, n_position: int, d_hid: int):
-        # TODO: this will break torchscript!
-        def get_position_angle_vec(position: np.ndarray):
-            return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
+    def register_positional_enc_table(self, name: str, n_position: int, d_hid: int):
+        """
+        Generates a sinusoidal positional encoding table.
 
-        # TODO: cleanup -- this is ugly
-        sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(n_position)])
-        sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
-        sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+        Args:
+            n_position (int): Number of positions (sequence length)
+            d_hid (int): Dimension of the hidden representations.
 
-        return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+        Returns:
+            Tensor: Positional encoding table (seq + 1, 1, dim_hidden)
+        """
+        position = torch.arange(n_position).unsqueeze(1)
+        div_term = torch.pow(10000, -torch.arange(0, d_hid, 2).float() / d_hid)
+
+        # Compute the sinusoid values (even indices get sin, odd indices get cos)
+        sinusoid_table = torch.zeros(n_position, d_hid)
+        sinusoid_table[:, 0::2] = torch.sin(position.float() * div_term)
+        sinusoid_table[:, 1::2] = torch.cos(position.float() * div_term)
+
+        self.register_buffer(name, sinusoid_table.unsqueeze(0).permute(1, 0, 2))
 
     def reparametrize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """Sample from p(z) using the reparameterization trick.
@@ -484,15 +492,10 @@ class ACTPolicy(Actor):
         """
         Perform action chunking with temporal ensembling to generate a chunk of actions given the observations.
         """
-        B, AH = nobs.shape[:2]
+        B, OH = nobs.shape[:2]
 
-        # If the observation is not flattened, we need to reshape it to (B, obs_horizon, obs_dim)
-        if not self.flatten_obs and len(nobs.shape) == 2:
-            nobs = nobs.reshape(B, self.obs_horizon, self.obs_dim)
-
-        # MVP for now
-        robot_state = nobs[:, :self.robot_state_dim]
-        object_state = nobs[:, self.robot_state_dim:]
+        robot_state = nobs[..., :self.robot_state_dim]
+        object_state = nobs[..., self.robot_state_dim:]
 
         a_hat, _, _ = self.model(robot_state, object_state, None)
 
@@ -514,12 +517,12 @@ class ACTPolicy(Actor):
         naction = batch["action"]
         B, AH, _ = naction.shape
 
-        # Obtain robot state and object state
-        robot_state = obs_cond[:, :self.robot_state_dim]
-        object_state = obs_cond[:, self.robot_state_dim:]
+        # Obtain robot state and flatten for now
+        # TODO: generalize for non-markovian case where observation horizon \neq 1
+        robot_state = obs_cond[..., :self.robot_state_dim]
+        object_state = obs_cond[..., self.robot_state_dim:]
 
-        a_hat, mu, logvar = self.model(robot_state, object_state,
-                                       naction[:, :self.pred_horizon])
+        a_hat, mu, logvar = self.model(robot_state, object_state, naction)
 
         # Enforce the prior
         total_kld, _, _ = kl_divergence(mu, logvar)
@@ -536,7 +539,7 @@ class ACTPolicy(Actor):
         }
 
     def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor) -> Tensor:
-        action_gt = action_gt[:, :a_hat.size(1)]
+        assert action_gt.shape == a_hat.shape, "Reconstruction loss gt, action_pred shape mismatch!"
         reconstruction_loss = self.ewise_reconstruction_loss_fn(a_hat, action_gt)
 
         return reconstruction_loss
