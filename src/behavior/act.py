@@ -310,7 +310,6 @@ class ConditionalVAE(CModule):
         self.pred_horizon = cfg.pred_horizon
         self.obs_horizon = cfg.obs_horizon
 
-        assert self.obs_horizon == 1, "Markov property is assumed by ACT CVAE."
         self.action_transformer = build(ActionTransformer, module_conf)
 
         # CVAE encoder, the word encoder is a bit overloaded here. There is an encoder
@@ -340,6 +339,10 @@ class ConditionalVAE(CModule):
             'pos_enc_table', 2 + self.pred_horizon, self.dim_hidden
         )
 
+        self.register_positional_enc_table(
+            ''
+        )
+
         # Additional CVAE decoder parameters
         self.latent_out_proj = nn.Linear(self.dim_latent, self.dim_hidden)
 
@@ -352,7 +355,7 @@ class ConditionalVAE(CModule):
                 actions: Optional[Tensor] = None
                 ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]:
         """
-        Forward pass for the ACT as a CVAE.
+        Forward pass for the ACT, trained as a CVAE.
 
         Args:
             robot_state (Tensor): Robot state embedding (B, obs_horizon, R)
@@ -363,6 +366,8 @@ class ConditionalVAE(CModule):
             Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]: _description_
         """
         is_training = actions is not None
+        robot_state = robot_state.squeeze(1)
+        obj_state = obj_state.squeeze(1)
 
         if is_training:
             B, _, _ = actions.shape
@@ -521,7 +526,7 @@ class ACTPolicy(Actor):
             Tuple[torch.Tensor, dict]: Scalar loss and loss dictionary.
         """
         # Note: State already normalized in the dataset
-        obs_cond = self._training_obs(batch, flatten=True)
+        obs_cond = self._training_obs(batch, flatten=False)
         naction = batch["action"]
         B, AH, _ = naction.shape
 
