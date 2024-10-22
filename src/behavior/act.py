@@ -292,15 +292,18 @@ class ActionTransformer(CModule):
 
 
 class ConditionalVAE(CModule):
-    def __init__(self, cfg: DictConfig) -> None:
+    def __init__(self,
+                 cfg: DictConfig,
+                 dim_action: int,
+                 dim_object_state: int,
+                 dim_robot_state: int) -> None:
         """Conditional variational autoencoder for training an action chunking policy.
 
         Args:
             cfg (DictConfig):
         """
-        self.params = (
-            'dim_latent', 'dim_action', 'dim_object_state', 'dim_robot_state'
-        )
+        self.params = ('dim_latent',)
+
         module_conf = cfg[self.__class__.__name__]
         super().__init__(self, module_conf)
 
@@ -317,19 +320,19 @@ class ConditionalVAE(CModule):
         self.encoder = build(TransformerEncoder, module_conf)
 
         self.dim_hidden = self.action_transformer.encoder.layers[0].dim_model
-        self.action_head = nn.Linear(self.dim_hidden, self.dim_action)
+        self.action_head = nn.Linear(self.dim_hidden, dim_action)
 
         # Learnable embeddings for action chunking
         self.query_embedding = nn.Embedding(self.pred_horizon, self.dim_hidden)
 
         # Additional CVAE encoder parameters
         self.global_context_embedding = nn.Embedding(1, self.dim_hidden)
-        self.encoder_action_proj = nn.Linear(self.dim_action, self.dim_hidden)
-        self.encoder_state_proj = nn.Linear(self.dim_robot_state, self.dim_hidden)
+        self.encoder_action_proj = nn.Linear(dim_action, self.dim_hidden)
+        self.encoder_state_proj = nn.Linear(dim_robot_state, self.dim_hidden)
         self.latent_proj_hidden = nn.Linear(self.dim_hidden, self.dim_latent * 2)  # Project to latent space represented by a mean and a variance ( * 2 )
-        self.input_proj_robot_state = nn.Linear(self.dim_robot_state, self.dim_hidden)
+        self.input_proj_robot_state = nn.Linear(dim_robot_state, self.dim_hidden)
         # Projection from object state to decoder input space
-        self.input_proj_obj_state = nn.Linear(self.dim_object_state, self.dim_hidden)
+        self.input_proj_obj_state = nn.Linear(dim_object_state, self.dim_hidden)
 
         # Register a table for positional encodings which is instantiated as a buffer so it does not get updated during backprop
         # We can leverage the same positional encoding scheme for actions as we do for observations (non-Markovian case)
@@ -458,8 +461,6 @@ def kl_divergence(mu: Tensor, logvar: Tensor):
           - total_kld: The total kl divergence, summed over latent dims and averaged over the batch.
           - dimension_wise_kld: KL divergence per latent dimension, averaged across the batch.
           - mean_kld: Mean KL divergence, averaged over both batch and latent dimension.
-
-    Note: This function  WILL need modifications in the form of flattening/reshaping to extend to latent representations of images
     """
     batch_size = mu.size(0)
     assert batch_size != 0, "Batch size must be non-zero to compute KL-divergence"
@@ -480,12 +481,19 @@ class ACTPolicy(Actor):
     ) -> None:
         super().__init__(device, cfg)
         self.actor_cfg = cfg.actor
+
         # TODO: experiment with beta scheduling
         self.beta_kl = cfg.actor.beta_kl
         self.ewise_reconstruction_loss_fn = _get_nnf_fn(
             cfg.actor.ewise_reconstruction_loss_fn
         )
-        self.model = ConditionalVAE(cfg.actor).to(device)
+
+        self.model = ConditionalVAE(
+            cfg.actor,
+            self.action_dim,
+            self.parts_poses_dim,
+            self.robot_state_dim
+        ).to(device)
 
     # === Inference ===
     def _normalized_action(self, nobs: Tensor) -> Tensor:
