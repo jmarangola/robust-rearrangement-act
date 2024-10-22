@@ -6,17 +6,12 @@ flatten_obs: True
 
 
 ewise_reconstruction_loss_fn: l1_loss
-beta_kl: 0.1
+beta_kl: 100
 
 
 # TODO: Fix "hardcodes" by pulling this stuff from the base config into this yaml directly using anchors
 ConditionalVAE:
-  dim_robot_state: 16
-  dim_object_state: 42
-
   dim_latent: 32
-  dim_action: 10
-
   TransformerEncoder:
     num_layers: 4
     layer_norm: True
@@ -26,7 +21,7 @@ ConditionalVAE:
       num_heads: 8
       dim_feedforward: 3200
       dropout: 0.1
-      activation: relu # Can specify any activation function implemented by torch.nn.functional
+      activation: relu
       normalize_before: False
 
   ActionTransformer:
