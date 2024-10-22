@@ -98,7 +98,6 @@ def main(cfg: DictConfig):
 
     # Check if we are continuing a run
     run_exists = False
-    print(f'cfg -- {cfg}')
     if cfg.wandb.continue_run_id is not None:
         try:
             run: Run = wandb.Api().run(
@@ -209,9 +208,6 @@ def main(cfg: DictConfig):
         agent = ResidualActPolicy(device, cfg)
     else:
         raise ValueError(f"Unknown actor type: {cfg.base_policy.actor}")
-
-    # debug
-    print(f"Loaded residual policy: {agent.__class__.__name__}")
 
     agent.to(device)
     agent.eval()
