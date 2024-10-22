@@ -535,7 +535,7 @@ class ACTPolicy(Actor):
         # Enforce the prior
         total_kld, _, _ = kl_divergence(mu, logvar)
 
-        # Compute the action reconstruction loss, discounting padded actions
+        # Compute the action-expert action reconstruction loss
         mean_recons_loss = self.compute_reconstruction_loss(a_hat, naction)
 
         loss = mean_recons_loss + self.beta_kl * total_kld
@@ -547,7 +547,5 @@ class ACTPolicy(Actor):
         }
 
     def compute_reconstruction_loss(self, a_hat: Tensor, action_gt: Tensor) -> Tensor:
-        assert action_gt.shape == a_hat.shape, "Reconstruction loss gt, action_pred shape mismatch!"
         reconstruction_loss = self.ewise_reconstruction_loss_fn(a_hat, action_gt)
-
         return reconstruction_loss
