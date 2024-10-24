@@ -101,7 +101,7 @@ class DiffusionPolicy(Actor):
 
         # Store the remaining actions in the previous action to warm start the next horizon
         self.prev_naction[:, : self.pred_horizon - self.action_horizon, :] = naction[
-            :, self.action_horizon :, :
+            :, self.action_horizon:, :
         ]
 
         return naction

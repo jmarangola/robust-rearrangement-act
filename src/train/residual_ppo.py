@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.behavior.diffusion import DiffusionPolicy
 from src.behavior.residual_diffusion import ResidualDiffusionPolicy
 from src.behavior.residual_mlp import ResidualMlpPolicy
+from src.behavior.residual_act import ResidualActPolicy
 from src.eval.eval_utils import get_model_from_api_or_cached
 from diffusers.optimization import get_scheduler
 
@@ -203,6 +204,8 @@ def main(cfg: DictConfig):
         agent = ResidualDiffusionPolicy(device, base_cfg)
     elif cfg.base_policy.actor.name == "mlp":
         agent = ResidualMlpPolicy(device, base_cfg)
+    elif cfg.base_policy.actor.name == 'act':
+        agent = ResidualActPolicy(device, cfg)
     else:
         raise ValueError(f"Unknown actor type: {cfg.base_policy.actor}")
 
