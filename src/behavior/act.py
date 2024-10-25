@@ -350,17 +350,20 @@ class ConditionalVAE(CModule):
 
     def forward(self, robot_state: Tensor, obj_state: Tensor,
                 actions: Optional[Tensor] = None
-                ) -> Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]:
+                ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Forward pass for the ACT as a CVAE.
-
-        Args:
-            robot_state (Tensor): Robot state embedding (B, obs_horizon, R)
-            obj_state (Tensor): Object state embedding (B, obs_horizon, O)
-            actions (Optional[Tensor], optional): Ground truth actions (B, pred_horizon, A). Defaults to None.
-
-        Returns:
-            Tuple[Tensor, Tensor, Tuple[Tensor, Tensor]]: _description_
+        
+        Args: 
+            robot_state (Tensor): Flattened robot state (B, R).
+            obj_state (Tensor): Flattened object state (B, O).
+            actions (Tensor): Expert actions (B, pred_horizon, A).
+            
+        Returns: 
+             Tuple[Tensor, Tensor, Tensor]: Output is a tuple containing: 
+                [0] Sequence of predicted actions, ahat (B, pred_horizon, A).
+                [1] Mean (mu) of the latent representation outputted by the encoder during training, or None otherwise.
+                [2] Log-variance (logvar) of the latent distribution outputted by the encoder during training, or None otherwise.
         """
         is_training = actions is not None
 
