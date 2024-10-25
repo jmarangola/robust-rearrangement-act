@@ -8,12 +8,14 @@ from src.models.vib import VIB
 from src.models.vision import VisionEncoder
 import torch
 import torch.nn as nn
+import hydra
 from src.dataset.normalizer import LinearNormalizer
 from src.models import get_encoder
 
 from ipdb import set_trace as bp  # noqa
 from src.common.geometry import proprioceptive_quat_to_6d_rotation
 from src.common.vision import FrontCameraTransform, WristCameraTransform
+from torch import Tensor
 
 from pytorch3d.transforms import (
     rotation_6d_to_matrix,

@@ -17,7 +17,7 @@ truncation_as_done: true
 base_policy:
   wandb_id: null  # If starting with a base policy from a WandB run (typical)
   wt_type: best_success_rate
-  wt_path: null  # If starting with a base policy stored on file 
+  wt_path: null  # If starting with a base policy stored on file
 
 observation_type: state
 

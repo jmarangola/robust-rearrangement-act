@@ -1,0 +1,62 @@
+defaults:
+  - base_actor
+
+name: act
+flatten_obs: True
+
+# Training parameters
+training: 
+  actor_lr: 1e-5
+ewise_reconstruction_loss_fn: l1_loss
+beta_kl: 100
+
+# Architecture 
+ConditionalVAE:
+  dim_latent: 32
+  TransformerEncoder:
+    num_layers: 4
+    layer_norm: True
+
+    TransformerEncoderLayer:
+      dim_model: 512
+      num_heads: 8
+      dim_feedforward: 3200
+      dropout: 0.1
+      activation: relu
+      normalize_before: False
+
+  ActionTransformer:
+    TransformerEncoder:
+      num_layers: 6
+      layer_norm: True
+      TransformerEncoderLayer:
+        dim_model: 512
+        num_heads: 8
+        dim_feedforward: 3200
+        dropout: 0.1
+        activation: relu
+        normalize_before: False
+
+    TransformerDecoder:
+      num_layers: 6
+      return_intermediate: True
+      TransformerDecoderLayer:
+        dim_model: 512
+        num_heads: 8
+        dim_feedforward: 3200
+        dropout: 0.1
+        activation: relu
+        normalize_before: False
+
+action_horizon: ${action_horizon}
+pred_horizon: ${pred_horizon}
+obs_horizon: ${obs_horizon}
+predict_past_actions: False
+
+
+
+
+
+
+
+

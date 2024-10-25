@@ -42,4 +42,22 @@ def get_actor(cfg: DictConfig, device) -> Actor:
             cfg=cfg,
             device=device,
         )
+
+    # Action chunking transformer actor
+    elif actor_name.lower() == "act":
+        from src.behavior.act import ACTPolicy
+
+        return ACTPolicy(
+            cfg=cfg,
+            device=device
+        )
+
+    elif actor_name == "residual_act":
+        from src.behavior.residual_act import ResidualActPolicy
+
+        return ResidualActPolicy(
+            cfg=cfg,
+            device=device
+        )
+
     raise ValueError(f"Unknown actor type: {cfg.actor}")

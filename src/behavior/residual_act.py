@@ -1,40 +1,21 @@
-from collections import deque
+import torch
 import hydra
+
+from collections import deque
+from src.behavior.act import ACTPolicy
 from omegaconf import DictConfig
-from src.behavior.diffusion import DiffusionPolicy
 from src.common.geometry import proprioceptive_quat_to_6d_rotation
 from src.models.residual import ResidualPolicy
-import torch
+from typing import Dict
 
 
-from ipdb import set_trace as bp  # noqa
-from typing import Dict, Union
-
-from collections import namedtuple
-
-ResidualTrainingValues = namedtuple(
-    "ResidualTrainingValues",
-    [
-        "residual_naction_samp",
-        "residual_naction_mean",
-        "logprob",
-        "entropy",
-        "value",
-        "env_action",
-        "next_residual_nobs",
-    ],
-)
-
-
-class ResidualDiffusionPolicy(DiffusionPolicy):
-
-    def __init__(
-        self,
-        device: Union[str, torch.device],
-        cfg: DictConfig,
-    ) -> None:
-        assert cfg.observation_type == "state"
-
+# TODO: A perhaps better approach (but WIP) has been started as RefinementActor
+# which could be a bit cleaner, however it is a bit more complex since
+# an Actor is passed into the constructor and it dynamically infers the policy from the weights
+# instead of requiring the end user to specify it themselves.
+class ResidualActPolicy(ACTPolicy):
+    def __init__(self, device: torch.device,
+                 cfg: DictConfig):
         super().__init__(device, cfg)
 
         # TODO: Reconsider the way we deal with this
@@ -77,34 +58,6 @@ class ResidualDiffusionPolicy(DiffusionPolicy):
             if key.startswith("normalizer.")
         }
         self.normalizer.load_state_dict(base_normalizer_state_dict)
-
-    def compute_loss(
-        self, batch: Dict[str, torch.Tensor], base_only: bool = True
-    ) -> torch.Tensor:
-        # Cut off the unused observations before passing to the bc loss
-        bc_loss, losses = super().compute_loss(batch)
-        if base_only:
-            return bc_loss, losses
-
-        # Predict the action
-        with torch.no_grad():
-            nobs = self._training_obs(batch, flatten=self.flatten_obs)
-            naction = self._normalized_action(nobs)
-
-        residual_nobs = torch.cat([batch["obs"], naction], dim=-1)
-        gt_residual_naction = batch["action"] - naction
-
-        # Don't start supervising the residual until the base model has started converging
-        if bc_loss > 0.03:
-            return bc_loss, losses
-
-        # Residual loss
-        residual_loss = self.residual_policy.bc_loss(residual_nobs, gt_residual_naction)
-
-        # Make a dictionary of losses for logging
-        losses["residual_loss"] = residual_loss.item()
-
-        return bc_loss + residual_loss, losses
 
     @torch.no_grad()
     def action(self, obs: Dict[str, torch.Tensor]):
@@ -177,50 +130,6 @@ class ResidualDiffusionPolicy(DiffusionPolicy):
 
         return obs
 
-    def get_action_and_value(
-        self,
-        obs: Union[Dict[str, torch.Tensor], torch.Tensor],
-        action: torch.Tensor = None,
-        eval: bool = False,
-    ) -> ResidualTrainingValues:
-        raise NotImplementedError
-        if isinstance(obs, dict):
-            # Get the base normalized action
-            base_naction = self.base_action_normalized(obs)
-
-            # Process the obs for the residual policy
-            next_nobs = self.process_obs(obs)
-            next_residual_nobs = torch.cat([next_nobs, base_naction], dim=-1)
-
-        else:
-            assert obs.shape[-1] == self.residual_policy.obs_dim
-            next_residual_nobs = obs
-
-        # Get the residual action
-        residual_naction_samp, logprob, ent, value, residual_naction_mean = (
-            self.residual_policy.get_action_and_value(next_residual_nobs, action=action)
-        )
-
-        residual_naction = residual_naction_mean if eval else residual_naction_samp
-
-        if action is None:
-            env_naction = (
-                base_naction + residual_naction * self.residual_policy.action_scale
-            )
-            env_action = self.normalizer(env_naction, "action", forward=False)
-        else:
-            env_action = action
-
-        return ResidualTrainingValues(
-            residual_naction_samp=residual_naction_samp,
-            residual_naction_mean=residual_naction_mean,
-            logprob=logprob,
-            entropy=ent,
-            value=value,
-            env_action=env_action,
-            next_residual_nobs=next_residual_nobs,
-        )
-
     def get_value(self, residual_nobs) -> torch.Tensor:
         return self.residual_policy.get_value(residual_nobs)
 
@@ -234,14 +143,17 @@ class ResidualDiffusionPolicy(DiffusionPolicy):
         nobs = self.process_obs(obs)
         naction = self.normalizer(action, "action", forward=True)
 
+        # Concatenate normalized observation with normalized action from the BC policy
         residual_nobs = torch.cat([nobs, naction], dim=-1)
 
+        # Apply correction
         naction_corrected = (
             naction
             + self.residual_policy.actor_mean(residual_nobs)
             * self.residual_policy.action_scale
         )
 
+        # Return the corrected action
         return self.normalizer(naction_corrected, "action", forward=False)
 
     def reset(self):
@@ -271,5 +183,6 @@ class ResidualDiffusionPolicy(DiffusionPolicy):
         return [
             p
             for n, p in self.model.named_parameters()
+            # TODO: generalize to encoderk.* doesn't do anything without images yet because these don't exist at the moment
             if not (n.startswith("encoder1.") or n.startswith("encoder2."))
         ]
