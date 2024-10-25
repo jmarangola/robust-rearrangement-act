@@ -4,12 +4,13 @@ defaults:
 name: act
 flatten_obs: True
 
-
+# Training parameters
+training: 
+  actor_lr: 1e-5
 ewise_reconstruction_loss_fn: l1_loss
 beta_kl: 100
 
-
-# TODO: Fix "hardcodes" by pulling this stuff from the base config into this yaml directly using anchors
+# Architecture 
 ConditionalVAE:
   dim_latent: 32
   TransformerEncoder:
@@ -51,7 +52,6 @@ action_horizon: ${action_horizon}
 pred_horizon: ${pred_horizon}
 obs_horizon: ${obs_horizon}
 predict_past_actions: False
-
 
 
 

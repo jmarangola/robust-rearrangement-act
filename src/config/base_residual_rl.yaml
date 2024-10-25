@@ -1,6 +1,6 @@
 defaults:
 - _self_
-- actor: residual_act
+- actor: residual_diffusion
 
 seed: null
 torch_deterministic: false
