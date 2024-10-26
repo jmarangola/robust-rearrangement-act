@@ -16,6 +16,9 @@ demo_source: teleop
 early_stopper:
   patience: inf
 
+rollout:
+  num_envs: 1024
+
 training:
   batch_size: 256
   steps_per_epoch: 1000
