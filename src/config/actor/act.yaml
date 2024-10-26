@@ -4,9 +4,6 @@ defaults:
 name: act
 flatten_obs: True
 
-# Training parameters
-training: 
-  actor_lr: 1e-5
 ewise_reconstruction_loss_fn: l1_loss
 beta_kl: 100
 

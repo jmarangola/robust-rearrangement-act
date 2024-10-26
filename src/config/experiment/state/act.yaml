@@ -2,3 +2,7 @@
 defaults:
   - state/base
   - override /actor: act
+
+
+training: 
+  actor_lr: 1e-5
